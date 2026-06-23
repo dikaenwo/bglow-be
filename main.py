@@ -79,17 +79,26 @@ def get_session_with_csrf():
     return s, csrf_token, xsrf_cookie
 
 def build_payload(query, csrf_token):
-    return {
+    is_na = bool(re.match(r'^N[A-E]\d+$', query, re.IGNORECASE))
+    
+    payload = {
         "draw": "1", "columns[0][data]": "PRODUCT_ID", "columns[0][name]": "", "columns[0][searchable]": "true", "columns[0][orderable]": "false", "columns[0][search][value]": "", "columns[0][search][regex]": "false",
         "columns[1][data]": "PRODUCT_REGISTER", "columns[1][name]": "", "columns[1][searchable]": "true", "columns[1][orderable]": "true", "columns[1][search][value]": "", "columns[1][search][regex]": "false",
         "columns[2][data]": "PRODUCT_NAME", "columns[2][name]": "", "columns[2][searchable]": "true", "columns[2][orderable]": "true", "columns[2][search][value]": "", "columns[2][search][regex]": "false",
         "columns[3][data]": "REGISTRAR_NAME", "columns[3][name]": "", "columns[3][searchable]": "true", "columns[3][orderable]": "true", "columns[3][search][value]": "", "columns[3][search][regex]": "false",
         "order[0][column]": "1", "order[0][dir]": "asc", "start": "0", "length": "10", "search[value]": "", "search[regex]": "false",
-        "query": query, "product_register": "", "product_name": "", "product_brand": "", "product_package": "", "product_form": "", "ingredients": "",
+        "query": "", "product_register": "", "product_name": "", "product_brand": "", "product_package": "", "product_form": "", "ingredients": "",
         "submit_date_start": "", "submit_date_end": "", "product_date_start": "", "product_date_end": "", "expire_date_start": "", "expire_date_end": "",
         "manufacturer_name": "", "status": "", "release_date": "", "manufacturer": "", "registrar": "",
         "_token": csrf_token,
     }
+
+    if is_na:
+        payload["product_register"] = query
+    else:
+        payload["search[value]"] = query
+
+    return payload
 
 
 # ─── JWT Helpers ────────────────────────────────────────────────────────────
