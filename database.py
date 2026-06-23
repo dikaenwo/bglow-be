@@ -8,8 +8,8 @@ load_dotenv()
 
 DB_CONFIG = {
     'host':     os.environ.get('DB_HOST', 'localhost'),
-    'user':     os.environ.get('DB_USER', 'root'),
-    'password': os.environ.get('DB_PASSWORD', ''),
+    'user':     os.environ.get('DB_USER', 'bglow'),
+    'password': os.environ.get('DB_PASSWORD', 'Bglow@2026'),
     'database': os.environ.get('DB_NAME', 'bglow_db')
 }
 

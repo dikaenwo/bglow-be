@@ -4,8 +4,8 @@ from mysql.connector import Error
 # Konfigurasi awal tanpa nama database untuk membuat database-nya terlebih dahulu
 INIT_CONFIG = {
     'host': 'localhost',
-    'user': 'root',
-    'password': ''
+    'user': 'bglow',
+    'password': 'Bglow@2026'
 }
 
 def init_database():
