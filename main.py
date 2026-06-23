@@ -657,24 +657,30 @@ def add_bpom_history():
             conn.close()
 
 
-@app.route("/api/scan-bpom", methods=["POST"])
+@app.route("/api/scan-bpom", methods=["GET", "POST"])
 def scan_bpom():
     """BPOM scraping endpoint — public karena tidak butuh akun untuk cek produk."""
-    data = request.get_json()
-    if not data or 'query' not in data:
-        return jsonify({"detail": "Nomor registrasi/query tidak boleh kosong"}), 400
+    if request.method == "POST":
+        data = request.get_json()
+        nomor_bpom = data.get('query')
+    else:
+        nomor_bpom = request.args.get('na') or request.args.get('query')
 
-    nomor_bpom = data['query']
+    if not nomor_bpom:
+        return jsonify({"detail": "Nomor registrasi/query tidak boleh kosong"}), 400
 
     try:
         # TODO: Jalankan fungsi/modul scraping BPOM di sini
         hasil_scraping = {
-            "status": "success",
-            "reg_no": nomor_bpom,
-            "product_name": "B-Glow Skincare Serum",
-            "brand": "B-Glow",
-            "manufacturer": "PT. Glow Kosmetik Indonesia",
-            "status_bpom": "TERDAFTAR / AKTIF"
+            "results": [
+                {
+                    "nomor_registrasi": nomor_bpom,
+                    "nama_produk": "B-Glow Skincare Serum (Mock)",
+                    "pendaftar": "PT. Glow Kosmetik Indonesia",
+                    "merek": "B-Glow",
+                    "status_bpom": "TERDAFTAR / AKTIF"
+                }
+            ]
         }
         return jsonify(hasil_scraping), 200
 
