@@ -61,4 +61,4 @@ This is the backend service for the B-Glow application, built with Python and Fl
 - `PUT /api/user/<user_id>` - Update user profile
 - `GET /api/bpom-history/<user_id>` - Get BPOM scan history
 - `POST /api/bpom-history` - Add BPOM scan history
-- `POST /api/scan-bpom` - Mock endpoint to scan BPOM registry
+- `GET/POST /api/scan-bpom` - Mock endpoint to scan BPOM registry
