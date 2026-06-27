@@ -15,6 +15,7 @@ import requests as req
 from bs4 import BeautifulSoup
 import re
 from urllib.parse import unquote
+from recommender import score_products
 
 # Muat .env jika ada (untuk development lokal)
 load_dotenv()
@@ -1012,6 +1013,64 @@ def skin_scan():
         "oil_level":        oil_level,
         "pore_condition":   pore_condition,
     }), 200
+
+
+# ─── Rekomendasi Produk (Berbasis Ingredien) ──────────────────────────────────
+
+@app.route("/api/recommendations", methods=["GET", "POST"])
+def get_recommendations():
+    """
+    Endpoint rekomendasi produk berbasis scoring ingredien.
+
+    Terima parameter (GET query string ATAU POST JSON body):
+      jenis_kulit  : str   — "Normal" | "Berminyak" | "Kombinasi" | "Kering"
+      permasalahan : str   — JSON array of labels, e.g. '["Jerawat","PIH"]'
+                            atau comma-separated, e.g. "Jerawat,PIH"
+      kategori     : str   — "cleanser"|"moisturizer"|"serum"|"sunscreen"|"toner"
+                            (opsional; kalau kosong kembalikan semua kategori)
+      limit        : int   — jumlah produk maksimum (default 50)
+
+    Response JSON:
+      { "products": [ { name, kategori, price, image_url, link, texture,
+                         score, match, recommended, cocok[], tidak_cocok[] } ] }
+    """
+    if request.method == "POST":
+        data = request.get_json() or {}
+    else:
+        data = request.args
+
+    jenis_kulit = str(data.get("jenis_kulit", "Normal")).strip()
+    kategori    = str(data.get("kategori", "")).strip().lower() or None
+
+    # Terima permasalahan sebagai JSON string atau comma-separated
+    raw_masalah = data.get("permasalahan", "[]")
+    if isinstance(raw_masalah, list):
+        permasalahan = raw_masalah
+    else:
+        raw_masalah = str(raw_masalah).strip()
+        if raw_masalah.startswith("["):
+            try:
+                permasalahan = json.loads(raw_masalah)
+            except (json.JSONDecodeError, ValueError):
+                permasalahan = []
+        else:
+            permasalahan = [p.strip() for p in raw_masalah.split(",") if p.strip()]
+
+    try:
+        limit = int(data.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+
+    try:
+        products = score_products(
+            jenis_kulit=jenis_kulit,
+            permasalahan_labels=permasalahan,
+            kategori_frontend=kategori,
+            limit=limit,
+        )
+        return jsonify({"products": products}), 200
+    except Exception as e:
+        return jsonify({"detail": f"Gagal menghitung rekomendasi: {str(e)}"}), 500
 
 
 if __name__ == "__main__":
