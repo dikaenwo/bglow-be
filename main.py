@@ -1,6 +1,7 @@
 import os
 import jwt
 import secrets
+import base64
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from functools import wraps
@@ -783,6 +784,234 @@ def scan_bpom():
 
     except Exception as e:
         return jsonify({"detail": f"Gagal memindai data: {str(e)}"}), 500
+
+
+# ─── Gemini AI Skin Scan (via REST API) ───────────────────────────────────────
+
+_GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+_GEMINI_MODEL = 'gemini-3.1-flash-lite'
+_GEMINI_REST_URL = (
+    'https://generativelanguage.googleapis.com/v1beta/models/'
+    f'{_GEMINI_MODEL}:generateContent'
+)
+
+if not _GEMINI_API_KEY:
+    print("[WARN] GEMINI_API_KEY tidak diset. Endpoint /api/skin-scan tidak akan berfungsi.")
+
+
+SKIN_ANALYSIS_PROMPT = """\
+Anda adalah dermatologis profesional yang menganalisis kondisi kulit wajah.
+Analisis gambar ini dengan cermat.
+Kembalikan respons HANYA dalam format JSON valid tanpa teks tambahan, tanpa markdown, tanpa penjelasan.
+
+Struktur JSON yang harus dikembalikan:
+{
+  "jenis_kulit": "Normal" | "Berminyak" | "Kombinasi" | "Kering",
+  "permasalahan": [
+    {
+      "label": "Jerawat" | "PIE" | "PIH" | "Bopeng" | "Hiperpigmentasi" | "Kemerahan",
+      "box_2d": [ymin, xmin, ymax, xmax],
+      "confidence": 0.0
+    }
+  ]
+}
+
+Catatan:
+- box_2d menggunakan skala 0-1000 relatif terhadap ukuran gambar (bukan piksel)
+- confidence adalah nilai 0.0 hingga 1.0
+- Jika kulit bersih tanpa masalah, kembalikan array permasalahan kosong []
+- Deteksi SEMUA area permasalahan kulit yang terlihat
+"""
+
+
+def _call_gemini_vision(b64_image: str, mime_type: str) -> dict:
+    """
+    Panggil Gemini REST API generateContent dengan gambar inline (base64).
+    Kembalikan dict hasil parse JSON dari Gemini.
+    """
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": SKIN_ANALYSIS_PROMPT},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": b64_image
+                        }
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 1024,
+        }
+    }
+
+    resp = req.post(
+        _GEMINI_REST_URL,
+        params={'key': _GEMINI_API_KEY},
+        json=payload,
+        timeout=60,
+        headers={'Content-Type': 'application/json'}
+    )
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:300]}")
+
+    resp_data = resp.json()
+    try:
+        raw_text = resp_data['candidates'][0]['content']['parts'][0]['text'].strip()
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Respons Gemini tidak terduga: {str(resp_data)[:200]}")
+
+    # Bersihkan markdown fence jika ada
+    clean = raw_text
+    if clean.startswith('```'):
+        lines = clean.split('\n')
+        # Buang baris pertama (```json atau ```) dan terakhir (```)
+        inner = lines[1:] if len(lines) > 1 else lines
+        if inner and inner[-1].strip() == '```':
+            inner = inner[:-1]
+        clean = '\n'.join(inner)
+    clean = clean.replace('```json', '').replace('```', '').strip()
+
+    return json.loads(clean)
+
+
+def _calculate_skin_score(permasalahan_list: list) -> int:
+    """Hitung skin score (0-100) berdasarkan permasalahan yang terdeteksi."""
+    score = 100
+    for item in permasalahan_list:
+        confidence = float(item.get('confidence', 0.5))
+        if confidence >= 0.8:
+            score -= 15
+        elif confidence >= 0.5:
+            score -= 10
+        else:
+            score -= 5
+    return max(20, score)
+
+
+def _derive_acne_level(permasalahan_list: list) -> str:
+    """Tentukan acne level dari hasil deteksi."""
+    jerawat = [p for p in permasalahan_list if p.get('label') == 'Jerawat']
+    if not jerawat:
+        return 'Tidak Ada'
+    avg_conf = sum(float(p.get('confidence', 0.5)) for p in jerawat) / len(jerawat)
+    if avg_conf >= 0.8:
+        return 'Parah — Grade 3'
+    elif avg_conf >= 0.6:
+        return 'Sedang — Grade 2'
+    else:
+        return 'Ringan — Grade 1'
+
+
+def _derive_oil_level(jenis_kulit: str) -> str:
+    """Tentukan oil level dari jenis kulit."""
+    mapping = {
+        'Berminyak': 'Tinggi — Seluruh Wajah',
+        'Kombinasi': 'Sedang — T-Zone',
+        'Normal': 'Normal — Seimbang',
+        'Kering': 'Rendah — Kering',
+    }
+    return mapping.get(jenis_kulit, 'Sedang — T-Zone')
+
+
+def _derive_pore_condition(permasalahan_list: list, jenis_kulit: str) -> str:
+    """Tentukan kondisi pori dari permasalahan dan jenis kulit."""
+    has_bopeng = any(p.get('label') == 'Bopeng' for p in permasalahan_list)
+    if has_bopeng:
+        return 'Besar — Terlihat Jelas'
+    if jenis_kulit in ('Berminyak', 'Kombinasi'):
+        return 'Sedang — Cukup Terlihat'
+    return 'Baik — Minimal'
+
+
+@app.route("/api/skin-scan", methods=["POST"])
+def skin_scan():
+    """Analisis kulit menggunakan Gemini AI Vision (via REST API).
+
+    Body JSON:
+      image    : str  -- Data URL base64 (data:image/jpeg;base64,...) atau base64 murni
+      user_id  : int  -- (opsional) ID user untuk auto-update DB
+
+    Response JSON:
+      jenis_kulit, permasalahan[], skin_score, acne_level, oil_level, pore_condition
+    """
+    if not _GEMINI_API_KEY:
+        return jsonify({"detail": "Gemini API Key tidak dikonfigurasi di server."}), 503
+
+    data = request.get_json()
+    if not data or 'image' not in data:
+        return jsonify({"detail": "Field 'image' (base64) wajib diisi."}), 400
+
+    image_data_url = data['image']
+    user_id = data.get('user_id')
+
+    # ── Decode base64 ───────────────────────────────────────────────────
+    try:
+        mime_type = 'image/jpeg'
+        if ',' in image_data_url:
+            header, b64_str = image_data_url.split(',', 1)
+            if 'png' in header:
+                mime_type = 'image/png'
+            elif 'webp' in header:
+                mime_type = 'image/webp'
+        else:
+            b64_str = image_data_url
+
+        # Validasi base64
+        base64.b64decode(b64_str, validate=True)
+    except Exception as e:
+        return jsonify({"detail": f"Format gambar tidak valid: {str(e)}"}), 400
+
+    # ── Panggil Gemini ────────────────────────────────────────────────
+    try:
+        hasil = _call_gemini_vision(b64_str, mime_type)
+    except json.JSONDecodeError as e:
+        return jsonify({"detail": f"Gemini mengembalikan format tidak valid: {str(e)}"}), 502
+    except RuntimeError as e:
+        return jsonify({"detail": str(e)}), 502
+    except Exception as e:
+        return jsonify({"detail": f"Gagal menganalisis dengan Gemini: {str(e)}"}), 500
+
+    # ── Hitung metrik turunan ───────────────────────────────────────────
+    jenis_kulit = hasil.get('jenis_kulit', 'Normal')
+    permasalahan_list = hasil.get('permasalahan', [])
+
+    skin_score      = _calculate_skin_score(permasalahan_list)
+    acne_level      = _derive_acne_level(permasalahan_list)
+    oil_level       = _derive_oil_level(jenis_kulit)
+    pore_condition  = _derive_pore_condition(permasalahan_list, jenis_kulit)
+
+    # ── Optional: Update DB user ─────────────────────────────────────────
+    if user_id:
+        try:
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE users
+                    SET skin_type=%s, acne_level=%s, oil_level=%s,
+                        pore_condition=%s, skin_score=%s
+                    WHERE id=%s
+                """, (jenis_kulit, acne_level, oil_level, pore_condition, skin_score, user_id))
+                conn.commit()
+                cursor.close()
+                conn.close()
+        except Exception as e:
+            print(f"[WARN] Gagal update skin data user {user_id}: {e}")
+
+    return jsonify({
+        "jenis_kulit":      jenis_kulit,
+        "permasalahan":     permasalahan_list,
+        "skin_score":       skin_score,
+        "acne_level":       acne_level,
+        "oil_level":        oil_level,
+        "pore_condition":   pore_condition,
+    }), 200
 
 
 if __name__ == "__main__":
