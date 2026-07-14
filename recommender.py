@@ -254,10 +254,18 @@ def _parse_ingredients(ingr_text: str) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _classify(score: float) -> str:
-    """Klasifikasi skor WSM ke kategori rekomendasi."""
-    if score >= 0.75:
+    """
+    Klasifikasi skor WSM ke kategori rekomendasi.
+    Menggunakan Laplace Smoothing, skor default/netral adalah 0.5.
+    
+    Threshold:
+      >= 0.65 → Sangat Direkomendasikan
+      >= 0.52 → Cukup Direkomendasikan
+      <  0.52 → Tidak Direkomendasikan
+    """
+    if score >= 0.65:
         return 'Sangat Direkomendasikan'
-    elif score >= 0.50:
+    elif score >= 0.52:
         return 'Cukup Direkomendasikan'
     return 'Tidak Direkomendasikan'
 
@@ -266,41 +274,83 @@ def _score_product_wsm(
     ingredients: list[dict],
     skin_type_norm: str,
     concern_labels_norm: set[str],
+    kategori_frontend: str | None = None,
 ) -> dict:
     """
-    Hitung WSM score untuk satu produk.
+    Hitung WSM score menggunakan Laplace Smoothing.
 
-    Returns dict:
-        wsm_score, kategori_rekomendasi, C1, C2, C3, C4,
-        cocok_names, tidak_names, ingredients_analysis
+    Formula Laplace: (Benefit + Alpha) / (Benefit + Penalty + 2 * Alpha)
+    Alpha = 1.0 (bobot smoothing).
+    Ini mencegah skor ekstrem (seperti 100%) jika hanya 1 ingredien cocok,
+    tanpa memberikan penalti pada ingredien inaktif (seperti air/pengawet)
+    yang tidak ada di dataset.
     """
-    # --- Per-ingredient analysis ---
+    if len(ingredients) == 0:
+        return {
+            'wsm_score': 0.5, 'kategori_rekomendasi': _classify(0.5),
+            'C1': 0.5, 'C2': 0.5, 'C3': 0.5, 'C4': 0.5,
+            'cocok_names': [], 'tidak_names': [], 'ingredients_analysis': [],
+        }
+
     ing_analysis = []
-    cocok_names = []
-    tidak_names = []
+    cocok_names  = []
+    tidak_names  = []
+
+    # Position-weighted accumulators
+    B1, P1 = 0.0, 0.0   # C1: skin type benefit/penalty
+    B2, P2 = 0.0, 0.0   # C2: concern benefit/penalty
+    B3, P3 = 0.0, 0.0   # C3: position (combined relevance)
+    B4, P4 = 0.0, 0.0   # C4: safety (combined)
+
+    # Whitelist surfaktan (Rinse-off suppression) untuk cleanser
+    RINSE_OFF_SURFACTANTS = {
+        'sodium cocoyl glycinate', 'disodium cocoyl glutamate', 'cocamidopropyl betaine',
+        'potassium cocoyl glycinate', 'potassium cocoate', 'sodium laureth sulfate',
+        'sodium lauryl sulfate', 'lauramidopropyl betaine', 'sodium cocoyl isethionate',
+        'peg-40 hydrogenated castor oil'
+    }
 
     for ing in ingredients:
-        norm = ing['name_norm']
+        norm   = ing['name_norm']
         bucket = ing['bucket']
 
-        # Lookup
-        skin_cocok = _SKIN_COCOK.get(norm, set())
-        skin_hindari = _SKIN_HINDARI.get(norm, set())
-        concern_cocok = _CONCERN_COCOK.get(norm, set())
-        concern_hindari = _CONCERN_HINDARI.get(norm, set())
-        badge = _BADGE_MAP.get(norm, '')
-        desc = _DESKRIPSI_MAP.get(norm, '')
+        pos_w = POSITIVE_POSITION_WEIGHT.get(bucket, 0.33)
+        neg_w = NEGATIVE_POSITION_WEIGHT.get(bucket, 0.40)
 
-        # Skor per-ingredient (sesuai algoritma Colab: benefit/penalty = 1.0 per match)
-        skin_pos = 1.0 if skin_type_norm in skin_cocok else 0.0
-        skin_neg = 1.0 if skin_type_norm in skin_hindari else 0.0
+        skin_pos   = 1.0 if skin_type_norm in _SKIN_COCOK.get(norm, set())   else 0.0
+        skin_neg   = 1.0 if skin_type_norm in _SKIN_HINDARI.get(norm, set()) else 0.0
+        concern_pos = 1.0 if concern_labels_norm & _CONCERN_COCOK.get(norm, set())   else 0.0
+        concern_neg = 1.0 if concern_labels_norm & _CONCERN_HINDARI.get(norm, set()) else 0.0
 
-        # Concern: cek apakah salah satu concern user cocok/hindari
-        concern_pos = 1.0 if concern_labels_norm & concern_cocok else 0.0
-        concern_neg = 1.0 if concern_labels_norm & concern_hindari else 0.0
+        # Rinse-off suppression: jika produk cleanser, abaikan penalti untuk surfaktan pembersih
+        if kategori_frontend == 'cleanser' and norm in RINSE_OFF_SURFACTANTS:
+            skin_neg = 0.0
+            concern_neg = 0.0
 
-        pos_total = max(skin_pos, concern_pos)
-        neg_total = max(skin_neg, concern_neg)
+        has_skin_rule = (skin_pos > 0 or skin_neg > 0)
+        has_conc_rule = (concern_pos > 0 or concern_neg > 0)
+        has_any_rule  = has_skin_rule or has_conc_rule
+
+        # Accumulate per-criteria
+        if has_skin_rule:
+            B1 += skin_pos   * pos_w
+            P1 += skin_neg   * neg_w
+
+        if has_conc_rule:
+            B2 += concern_pos * pos_w
+            P2 += concern_neg * neg_w
+
+        # C3: position score
+        if has_any_rule:
+            if max(skin_pos, concern_pos) > 0:
+                B3 += pos_w
+            if max(skin_neg, concern_neg) > 0:
+                P3 += neg_w
+
+        # C4: safety
+        if has_any_rule:
+            B4 += max(skin_pos, concern_pos) * pos_w
+            P4 += max(skin_neg, concern_neg) * neg_w
 
         is_positive = (skin_pos > 0) or (concern_pos > 0)
         is_negative = (skin_neg > 0) or (concern_neg > 0)
@@ -320,80 +370,42 @@ def _score_product_wsm(
             tidak_names.append(ing['name_raw'].title())
 
         ing_analysis.append({
-            'name': ing['name_raw'],
-            'badge': badge,
+            'name':     ing['name_raw'],
+            'badge':    _BADGE_MAP.get(norm, ''),
             'position': ing['position'],
-            'bucket': bucket,
-            'status': status,
-            'deskripsi': desc,
-            # Internal scoring data
-            '_skin_pos': skin_pos,
-            '_skin_neg': skin_neg,
-            '_concern_pos': concern_pos,
-            '_concern_neg': concern_neg,
-            '_pos_total': pos_total,
-            '_neg_total': neg_total,
+            'bucket':   bucket,
+            'status':   status,
+            'deskripsi': _DESKRIPSI_MAP.get(norm, ''),
         })
 
-    # --- C1: Kecocokan Jenis Kulit ---
-    B1 = sum(a['_skin_pos'] for a in ing_analysis if a['_skin_pos'] > 0 or a['_skin_neg'] > 0)
-    P1 = sum(a['_skin_neg'] for a in ing_analysis if a['_skin_pos'] > 0 or a['_skin_neg'] > 0)
-    C1 = B1 / (B1 + P1) if (B1 + P1) > 0 else 0.5
+    # ── Laplace Smoothing (Alpha = 1.0) ──────────────────────────────────────
+    # Mencegah (1 / 1) = 100% dari 1 ingredien,
+    # (1 + 1) / (1 + 0 + 2) = 66% (lebih realistis)
+    alpha = 1.0
 
-    # --- C2: Kecocokan Masalah Kulit ---
-    B2 = sum(a['_concern_pos'] for a in ing_analysis if a['_concern_pos'] > 0 or a['_concern_neg'] > 0)
-    P2 = sum(a['_concern_neg'] for a in ing_analysis if a['_concern_pos'] > 0 or a['_concern_neg'] > 0)
-    C2 = B2 / (B2 + P2) if (B2 + P2) > 0 else 0.5
+    C1 = (B1 + alpha) / (B1 + P1 + 2 * alpha)
+    C2 = (B2 + alpha) / (B2 + P2 + 2 * alpha)
+    C3 = (B3 + alpha) / (B3 + P3 + 2 * alpha)
+    C4 = (B4 + alpha) / (B4 + P4 + 2 * alpha)
 
-    # --- C3: Posisi Ingredien Relevan ---
-    Pos3 = 0.0
-    Neg3 = 0.0
-    for a in ing_analysis:
-        is_relevant = (a['_pos_total'] > 0) or (a['_neg_total'] > 0)
-        if not is_relevant:
-            continue
-        bucket = a['bucket']
-        if a['_pos_total'] > 0:
-            Pos3 += POSITIVE_POSITION_WEIGHT.get(bucket, 0.33)
-        if a['_neg_total'] > 0:
-            Neg3 += NEGATIVE_POSITION_WEIGHT.get(bucket, 0.40)
-    C3 = Pos3 / (Pos3 + Neg3) if (Pos3 + Neg3) > 0 else 0.5
-
-    # --- C4: Keamanan ---
-    safe_total = sum(a['_pos_total'] for a in ing_analysis if a['_pos_total'] > 0 or a['_neg_total'] > 0)
-    risk_total = sum(a['_neg_total'] for a in ing_analysis if a['_pos_total'] > 0 or a['_neg_total'] > 0)
-    C4 = safe_total / (safe_total + risk_total) if (safe_total + risk_total) > 0 else 1.0
-
-    # --- WSM Final ---
+    # ── WSM Final ─────────────────────────────────────────────────────────────
     wsm = (
         WEIGHTS['C1_skin_type'] * C1 +
-        WEIGHTS['C2_concern'] * C2 +
-        WEIGHTS['C3_position'] * C3 +
-        WEIGHTS['C4_safety'] * C4
+        WEIGHTS['C2_concern']   * C2 +
+        WEIGHTS['C3_position']  * C3 +
+        WEIGHTS['C4_safety']    * C4
     )
 
-    # Clean up internal fields from analysis before returning
-    clean_analysis = []
-    for a in ing_analysis:
-        clean_analysis.append({
-            'name':      a['name'],
-            'badge':     a['badge'],
-            'position':  a['position'],
-            'bucket':    a['bucket'],
-            'status':    a['status'],
-            'deskripsi': a['deskripsi'],
-        })
-
     return {
-        'wsm_score': round(wsm, 6),
+        'wsm_score':            round(wsm, 6),
         'kategori_rekomendasi': _classify(wsm),
         'C1': round(C1, 4),
         'C2': round(C2, 4),
         'C3': round(C3, 4),
         'C4': round(C4, 4),
-        'cocok_names': cocok_names,
-        'tidak_names': tidak_names,
-        'ingredients_analysis': clean_analysis,
+        'cocok_names':          cocok_names,
+        'tidak_names':          tidak_names,
+        'ingredients_analysis': ing_analysis,
     }
 
 
@@ -444,15 +456,16 @@ def score_products(
     # ── Score setiap produk ────────────────────────────────────────────────
     results = []
     for _, row in df.iterrows():
-        ingr_raw = str(row.get('Ingridients', '') or '')
-        if not ingr_raw.strip():
-            continue
-
-        ingredients = _parse_ingredients(ingr_raw)
+        ingredients = _parse_ingredients(row.get('Ingredients', ''))
         if not ingredients:
             continue
 
-        wsm_result = _score_product_wsm(ingredients, skin_type_norm, concern_labels_norm)
+        wsm_result = _score_product_wsm(
+            ingredients, 
+            skin_type_norm, 
+            concern_labels_norm, 
+            kategori_frontend=kategori_frontend
+        )
 
         harga = row.get('Harga')
         try:
@@ -460,7 +473,8 @@ def score_products(
         except (TypeError, ValueError):
             harga = 0
 
-        # Match percentage: langsung WSM × 100 (sudah 0-1 range)
+        # Match percentage: WSM score directly gives 0-1, 0.5 is 50%, 0.8 is 80%
+        # So we just multiply by 100
         match_pct = min(100, max(0, round(wsm_result['wsm_score'] * 100)))
 
         # Batasi jumlah analysis yang dikirim (hanya yang relevan + max 20)
