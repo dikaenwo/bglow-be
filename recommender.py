@@ -75,13 +75,6 @@ def _normalize(name: str) -> str:
     return re.sub(r'\s+', ' ', name.strip().strip('"').strip("'")).lower()
 
 
-def _parse_comma_list(val) -> set:
-    """Parse string 'A, B, C' menjadi set {'a', 'b', 'c'}. Return empty set jika '-' atau NaN."""
-    if pd.isna(val) or str(val).strip() in ('-', '', 'nan'):
-        return set()
-    return {x.strip().lower() for x in str(val).split(',') if x.strip() and x.strip() != '-'}
-
-
 # --- Lookup dicts (di-populate oleh _load_knowledge) ---
 # key: ingredient_name_norm (lowercase)
 # value: set of matching skin types / concerns (lowercase)
@@ -96,62 +89,102 @@ _df_produk: pd.DataFrame | None = None
 
 
 def _load_knowledge():
-    """Load Dataset Terbaru.csv dan build lookup dicts untuk O(1) matching."""
+    """Load Dataset Terbaru.csv dan build lookup dicts untuk O(1) matching.
+
+    Mendukung dua format dataset:
+    - Format BARU: kolom ingredient_name, badge_text, domain, target, polarity
+    - Format LAMA: kolom Ingredient, Jenis Kulit Cocok/Hindari, Masalah Kulit Cocok/Hindari, Badge
+    """
     global _SKIN_COCOK, _SKIN_HINDARI, _CONCERN_COCOK, _CONCERN_HINDARI
     global _BADGE_MAP, _DESKRIPSI_MAP
 
     knowledge_path = os.path.join(_DATASET_DIR, 'Dataset Terbaru.csv')
     df = pd.read_csv(knowledge_path, low_memory=False)
 
-    for _, row in df.iterrows():
-        name_raw = str(row.get('Ingredient', '')).strip()
-        if not name_raw:
-            continue
-        name_norm = _normalize(name_raw)
+    cols = set(df.columns.tolist())
 
-        # Skin type cocok / hindari
-        skin_cocok = _parse_comma_list(row.get('Jenis Kulit Cocok'))
-        skin_hindari = _parse_comma_list(row.get('Jenis Kulit Hindari'))
-        concern_cocok = _parse_comma_list(row.get('Masalah Kulit Cocok'))
-        concern_hindari = _parse_comma_list(row.get('Masalah Kulit Hindari'))
+    # ── Deteksi format dataset ────────────────────────────────────────────────
+    is_new_format = 'ingredient_name' in cols and 'domain' in cols and 'target' in cols
 
-        # Merge (beberapa ingredient bisa muncul lebih dari sekali dengan badge berbeda)
-        if name_norm in _SKIN_COCOK:
-            _SKIN_COCOK[name_norm] |= skin_cocok
-        else:
-            _SKIN_COCOK[name_norm] = skin_cocok
+    if is_new_format:
+        # Format BARU: setiap baris = 1 aturan (1 ingredien x 1 target x domain x polarity)
+        for _, row in df.iterrows():
+            name_raw = str(row.get('ingredient_name', '')).strip()
+            if not name_raw or name_raw == 'nan':
+                continue
+            name_norm = _normalize(name_raw)
 
-        if name_norm in _SKIN_HINDARI:
-            _SKIN_HINDARI[name_norm] |= skin_hindari
-        else:
-            _SKIN_HINDARI[name_norm] = skin_hindari
+            domain   = str(row.get('domain',   '')).strip().lower()   # 'skin_type' | 'concern'
+            target   = str(row.get('target',   '')).strip()           # e.g. 'Berminyak', 'Berjerawat'
+            polarity = str(row.get('polarity', '')).strip().lower()   # 'positif' | 'negatif'
 
-        if name_norm in _CONCERN_COCOK:
-            _CONCERN_COCOK[name_norm] |= concern_cocok
-        else:
-            _CONCERN_COCOK[name_norm] = concern_cocok
+            if not domain or not target or target == 'nan' or not polarity:
+                continue
 
-        if name_norm in _CONCERN_HINDARI:
-            _CONCERN_HINDARI[name_norm] |= concern_hindari
-        else:
-            _CONCERN_HINDARI[name_norm] = concern_hindari
+            target_norm = target.strip().lower()
 
-        # Badge — gabungkan jika sudah ada (beda baris bisa punya badge berbeda)
-        badge = str(row.get('Badge', '')).strip()
-        if badge and badge != 'nan':
-            if name_norm in _BADGE_MAP:
-                existing = set(_BADGE_MAP[name_norm].split(' | '))
-                new_badges = set(badge.split(' | '))
-                _BADGE_MAP[name_norm] = ' | '.join(sorted(existing | new_badges))
-            else:
-                _BADGE_MAP[name_norm] = badge
+            if domain == 'skin_type':
+                if polarity == 'positif':
+                    _SKIN_COCOK.setdefault(name_norm, set()).add(target_norm)
+                elif polarity == 'negatif':
+                    _SKIN_HINDARI.setdefault(name_norm, set()).add(target_norm)
 
-        # Deskripsi (ambil yang pertama non-kosong)
-        desc = str(row.get('Deskripsi_ID', '')).strip()
-        if desc and desc != 'nan' and name_norm not in _DESKRIPSI_MAP:
-            # Ambil max 150 char untuk deskripsi singkat
-            _DESKRIPSI_MAP[name_norm] = desc[:150]
+            elif domain == 'concern':
+                if polarity == 'positif':
+                    _CONCERN_COCOK.setdefault(name_norm, set()).add(target_norm)
+                elif polarity == 'negatif':
+                    _CONCERN_HINDARI.setdefault(name_norm, set()).add(target_norm)
 
+            # Badge — pakai badge_text dari dataset baru
+            badge = str(row.get('badge_text', '')).strip()
+            if not badge or badge == 'nan':
+                badge = str(row.get('raw_badge_cell', '')).strip()
+            if badge and badge != 'nan':
+                if name_norm in _BADGE_MAP:
+                    existing = set(_BADGE_MAP[name_norm].split(' | '))
+                    new_badges = set(badge.split(' | '))
+                    _BADGE_MAP[name_norm] = ' | '.join(sorted(existing | new_badges))
+                else:
+                    _BADGE_MAP[name_norm] = badge
+
+    else:
+        # Format LAMA: kompatibilitas mundur
+        def _parse_comma_list(val) -> set:
+            if pd.isna(val) or str(val).strip() in ('-', '', 'nan'):
+                return set()
+            return {x.strip().lower() for x in str(val).split(',') if x.strip() and x.strip() != '-'}
+
+        for _, row in df.iterrows():
+            name_raw = str(row.get('Ingredient', '')).strip()
+            if not name_raw:
+                continue
+            name_norm = _normalize(name_raw)
+
+            skin_cocok    = _parse_comma_list(row.get('Jenis Kulit Cocok'))
+            skin_hindari  = _parse_comma_list(row.get('Jenis Kulit Hindari'))
+            concern_cocok  = _parse_comma_list(row.get('Masalah Kulit Cocok'))
+            concern_hindari = _parse_comma_list(row.get('Masalah Kulit Hindari'))
+
+            _SKIN_COCOK.setdefault(name_norm, set()).update(skin_cocok)
+            _SKIN_HINDARI.setdefault(name_norm, set()).update(skin_hindari)
+            _CONCERN_COCOK.setdefault(name_norm, set()).update(concern_cocok)
+            _CONCERN_HINDARI.setdefault(name_norm, set()).update(concern_hindari)
+
+            badge = str(row.get('Badge', '')).strip()
+            if badge and badge != 'nan':
+                if name_norm in _BADGE_MAP:
+                    existing = set(_BADGE_MAP[name_norm].split(' | '))
+                    new_badges = set(badge.split(' | '))
+                    _BADGE_MAP[name_norm] = ' | '.join(sorted(existing | new_badges))
+                else:
+                    _BADGE_MAP[name_norm] = badge
+
+            desc = str(row.get('Deskripsi_ID', '')).strip()
+            if desc and desc != 'nan' and name_norm not in _DESKRIPSI_MAP:
+                _DESKRIPSI_MAP[name_norm] = desc[:150]
+
+    fmt = "BARU (domain/target/polarity)" if is_new_format else "LAMA (Jenis Kulit Cocok/Hindari)"
+    print(f"[recommender] Format dataset terdeteksi: {fmt}")
     return len(df)
 
 
