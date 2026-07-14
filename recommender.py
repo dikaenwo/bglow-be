@@ -456,7 +456,11 @@ def score_products(
     # ── Score setiap produk ────────────────────────────────────────────────
     results = []
     for _, row in df.iterrows():
-        ingredients = _parse_ingredients(row.get('Ingredients', ''))
+        ingr_raw = str(row.get('Ingridients', '') or '')
+        if not ingr_raw.strip():
+            continue
+
+        ingredients = _parse_ingredients(ingr_raw)
         if not ingredients:
             continue
 
