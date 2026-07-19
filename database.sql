@@ -111,3 +111,20 @@ CREATE TABLE IF NOT EXISTS `user_bpom_history` (
   KEY `user_id` (`user_id`),
   CONSTRAINT `user_bpom_history_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- 9. Struktur dari tabel `product_reviews`
+CREATE TABLE IF NOT EXISTS `product_reviews` (
+  `id` INT(11) NOT NULL AUTO_INCREMENT,
+  `product_name` VARCHAR(255) NOT NULL,
+  `user_id` INT(11) DEFAULT NULL,
+  `user_name` VARCHAR(255) NOT NULL,
+  `user_profile` VARCHAR(255) DEFAULT '',
+  `rating` INT(11) NOT NULL,
+  `recommends` TINYINT(1) DEFAULT 1,
+  `comment` TEXT NOT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `product_reviews_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+

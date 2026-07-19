@@ -1,11 +1,16 @@
+import os
 import mysql.connector
 from mysql.connector import Error
+from dotenv import load_dotenv
+
+# Muat .env jika ada (untuk development lokal)
+load_dotenv()
 
 # Konfigurasi awal tanpa nama database untuk membuat database-nya terlebih dahulu
 INIT_CONFIG = {
-    'host': 'localhost',
-    'user': 'bglow',
-    'password': 'Bglow@2026'
+    'host':     os.environ.get('DB_HOST', 'localhost'),
+    'user':     os.environ.get('DB_USER', 'bglow'),
+    'password': os.environ.get('DB_PASSWORD', 'Bglow@2026')
 }
 
 def init_database():
@@ -156,6 +161,23 @@ def init_database():
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
             """)
             print("Table 'user_bpom_history' checked/created.")
+            
+            # 9. Buat tabel product_reviews jika belum ada
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS product_reviews (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                product_name VARCHAR(255) NOT NULL,
+                user_id INT DEFAULT NULL,
+                user_name VARCHAR(255) NOT NULL,
+                user_profile VARCHAR(255) DEFAULT '',
+                rating INT NOT NULL,
+                recommends TINYINT(1) DEFAULT 1,
+                comment TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+            """)
+            print("Table 'product_reviews' checked/created.")
             
             conn.commit()
             cursor.close()

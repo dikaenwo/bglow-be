@@ -1073,5 +1073,96 @@ def get_recommendations():
         return jsonify({"detail": f"Gagal menghitung rekomendasi: {str(e)}"}), 500
 
 
+# ─── Review & Komentar Produk ───────────────────────────────────────────────
+
+@app.route("/api/reviews", methods=["GET"])
+def get_reviews():
+    product_name = request.args.get('product_name')
+    if not product_name:
+        return jsonify({"detail": "product_name query parameter required"}), 400
+    
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"detail": "Database connection failed"}), 500
+        
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT user_name, user_profile, rating, recommends, comment, created_at 
+            FROM product_reviews 
+            WHERE product_name = %s 
+            ORDER BY id DESC
+        """, (product_name,))
+        rows = cursor.fetchall()
+        
+        reviews_list = []
+        for r in rows:
+            dt = r["created_at"]
+            date_str = dt.strftime("%Y-%m-%d") if isinstance(dt, datetime) else str(dt)
+            reviews_list.append({
+                "name": r["user_name"],
+                "profile": r["user_profile"],
+                "rating": int(r["rating"]),
+                "recommends": bool(r["recommends"]),
+                "comment": r["comment"],
+                "date": date_str
+            })
+        
+        return jsonify({"reviews": reviews_list}), 200
+    except Exception as e:
+        return jsonify({"detail": f"Error: {str(e)}"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
+@app.route("/api/reviews", methods=["POST"])
+@require_auth
+def create_review():
+    user_id = g.current_user_id
+    data = request.get_json()
+    if not data or 'product_name' not in data or 'rating' not in data or 'comment' not in data:
+        return jsonify({"detail": "Data tidak lengkap"}), 400
+        
+    product_name = data['product_name']
+    rating = int(data['rating'])
+    recommends = bool(data.get('recommends', True))
+    comment = data['comment']
+    
+    if rating < 1 or rating > 5:
+        return jsonify({"detail": "Rating harus antara 1 sampai 5"}), 400
+        
+    if not comment.strip():
+        return jsonify({"detail": "Komentar tidak boleh kosong"}), 400
+        
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"detail": "Database connection failed"}), 500
+        
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT name, skin_type FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"detail": "User tidak ditemukan"}), 404
+            
+        user_name = user['name']
+        skin_type = user['skin_type'] or 'Normal'
+        user_profile = f"Kulit {skin_type}"
+        
+        cursor.execute("""
+            INSERT INTO product_reviews (product_name, user_id, user_name, user_profile, rating, recommends, comment)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (product_name, user_id, user_name, user_profile, rating, recommends, comment))
+        conn.commit()
+        
+        return jsonify({"message": "Review berhasil ditambahkan"}), 201
+    except Exception as e:
+        return jsonify({"detail": f"Error: {str(e)}"}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", debug=True, port=5050)
+    app.run(host="0.0.0.0", debug=True, port=5050)
