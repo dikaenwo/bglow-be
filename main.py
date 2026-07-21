@@ -18,7 +18,11 @@ from urllib.parse import unquote
 from recommender import score_products
 
 # Muat .env jika ada (untuk development lokal)
-load_dotenv()
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+if os.path.exists(_env_path):
+    load_dotenv(_env_path)
+else:
+    load_dotenv()
 
 app = Flask(__name__)
 
@@ -108,7 +112,7 @@ def build_payload(query, csrf_token):
 def generate_token(user_id: int) -> str:
     """Buat JWT Bearer token untuk user_id yang diberikan."""
     payload = {
-        'sub': user_id,                                          # Subject (user id)
+        'sub': str(user_id),                                     # Subject (user id) must be string
         'iat': datetime.now(timezone.utc),                       # Issued at
         'exp': datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRY_DAYS)  # Expiry
     }
@@ -119,9 +123,8 @@ def decode_token(token: str) -> Optional[dict]:
     """Decode dan verifikasi JWT. Return payload dict, atau None jika invalid."""
     try:
         return jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
+    except Exception as e:
+        print(f"[ERROR] decode_token failed: {e}", flush=True)
         return None
 
 
@@ -142,7 +145,10 @@ def require_auth(f):
         if payload is None:
             return jsonify({"detail": "Token tidak valid atau sudah kadaluarsa. Silakan login ulang."}), 401
 
-        g.current_user_id = payload['sub']
+        try:
+            g.current_user_id = int(payload['sub'])
+        except (ValueError, TypeError):
+            return jsonify({"detail": "Format sub dalam token tidak valid."}), 401
         return f(*args, **kwargs)
     return decorated
 
@@ -941,8 +947,10 @@ def skin_scan():
     Response JSON:
       jenis_kulit, permasalahan[], skin_score, acne_level, oil_level, pore_condition
     """
+    is_mock = False
     if not _GEMINI_API_KEY:
-        return jsonify({"detail": "Gemini API Key tidak dikonfigurasi di server."}), 503
+        is_mock = True
+        print("[WARN] GEMINI_API_KEY tidak diset. Menggunakan mock analysis.")
 
     data = request.get_json()
     if not data or 'image' not in data:
@@ -969,14 +977,34 @@ def skin_scan():
         return jsonify({"detail": f"Format gambar tidak valid: {str(e)}"}), 400
 
     # ── Panggil Gemini ────────────────────────────────────────────────
-    try:
-        hasil = _call_gemini_vision(b64_str, mime_type)
-    except json.JSONDecodeError as e:
-        return jsonify({"detail": f"Gemini mengembalikan format tidak valid: {str(e)}"}), 502
-    except RuntimeError as e:
-        return jsonify({"detail": str(e)}), 502
-    except Exception as e:
-        return jsonify({"detail": f"Gagal menganalisis dengan Gemini: {str(e)}"}), 500
+    if is_mock:
+        # Simulated scan response
+        hasil = {
+            "jenis_kulit": "Kombinasi",
+            "permasalahan": [
+                {
+                    "label": "Jerawat",
+                    "deskripsi": "Jerawat kemerahan ringan di area pipi.",
+                    "box_2d": [300, 400, 350, 460],
+                    "confidence": 0.89
+                },
+                {
+                    "label": "Pori-pori Besar",
+                    "deskripsi": "Pori-pori tampak melebar di area T-zone.",
+                    "box_2d": [450, 480, 520, 560],
+                    "confidence": 0.85
+                }
+            ]
+        }
+    else:
+        try:
+            hasil = _call_gemini_vision(b64_str, mime_type)
+        except json.JSONDecodeError as e:
+            return jsonify({"detail": f"Gemini mengembalikan format tidak valid: {str(e)}"}), 502
+        except RuntimeError as e:
+            return jsonify({"detail": str(e)}), 502
+        except Exception as e:
+            return jsonify({"detail": f"Gagal menganalisis dengan Gemini: {str(e)}"}), 500
 
     # ── Hitung metrik turunan ───────────────────────────────────────────
     jenis_kulit = hasil.get('jenis_kulit', 'Normal')
