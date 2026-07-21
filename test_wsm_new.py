@@ -10,7 +10,7 @@ for label, ing_text in [('Hanasui Bright Moisturizer', ing1), ('Hanasui Acne FW'
     match_pct = min(100, max(0, round((res['wsm_score'] - 0.5) * 200)))
     print(label)
     print('  N=%d | wsm=%.3f | match=%d%% | %s' % (len(ings), res['wsm_score'], match_pct, res['kategori_rekomendasi']))
-    print('  C1=%.3f C2=%.3f C3=%.3f C4=%.3f' % (res['C1'], res['C2'], res['C3'], res['C4']))
+    print('  C1=%.3f C2=%.3f C3=%.3f' % (res['C1'], res['C2'], res['C3']))
     print('  cocok=%s' % res['cocok_names'][:4])
     print('  tidak=%s' % res['tidak_names'][:3])
     print()

@@ -1,10 +1,13 @@
 """
 recommender.py — Sistem rekomendasi produk skincare B-Glow
-Menggunakan WSM (Weighted Sum Model) dengan 4 kriteria:
-  C1 (0.25) — Kecocokan jenis kulit
-  C2 (0.30) — Kecocokan masalah kulit
-  C3 (0.20) — Posisi ingredien relevan
-  C4 (0.25) — Keamanan / safety
+Menggunakan WSM (Weighted Sum Model) dengan 3 kriteria:
+  C1 (0.3333) — Kecocokan jenis kulit
+  C2 (0.4000) — Kecocokan masalah kulit
+  C3 (0.2667) — Posisi ingredient relevan
+
+Bobot tersebut merupakan normalisasi dari bobot awal 0.25, 0.30, dan 0.20
+agar jumlah bobot WSM sama dengan 1.00. Nilai setiap kriteria dihitung
+menggunakan rasio terregularisasi dengan lambda = 2.
 
 Dataset: Dataset Terbaru.csv (knowledge ingredien ~10k baris)
          Dataset Produk.xlsx (daftar produk ~322 produk)
@@ -20,12 +23,19 @@ import pandas as pd
 # KONFIGURASI WSM
 # ═══════════════════════════════════════════════════════════════════════════════
 
-WEIGHTS = {
+# Bobot awal penelitian: C1=0.25, C2=0.30, C3=0.20 (total=0.75).
+# WSM mensyaratkan total bobot 1.00, sehingga bobot dinormalisasi.
+_RAW_WEIGHTS = {
     'C1_skin_type': 0.25,
     'C2_concern':   0.30,
     'C3_position':  0.20,
-    'C4_safety':    0.25,
 }
+_WEIGHT_TOTAL = sum(_RAW_WEIGHTS.values())
+WEIGHTS = {key: value / _WEIGHT_TOTAL for key, value in _RAW_WEIGHTS.items()}
+
+# Regularisasi rasio: (B + lambda/2) / (B + P + lambda).
+# Dengan lambda=2, formula ekuivalen dengan (B+1)/(B+P+2).
+REGULARIZATION_LAMBDA = 2.0
 
 POSITIVE_POSITION_WEIGHT = {
     'awal':   1.00,
@@ -82,6 +92,14 @@ _SKIN_COCOK: dict[str, set[str]] = {}
 _SKIN_HINDARI: dict[str, set[str]] = {}
 _CONCERN_COCOK: dict[str, set[str]] = {}
 _CONCERN_HINDARI: dict[str, set[str]] = {}
+
+# Lookup skor: ingredient_norm -> target_norm -> skor benefit/penalty.
+# Nilai maksimum dipakai jika terdapat lebih dari satu aturan untuk pasangan
+# ingredient-target yang sama agar aturan duplikat tidak menggandakan skor.
+_SKIN_POS_SCORES: dict[str, dict[str, float]] = {}
+_SKIN_NEG_SCORES: dict[str, dict[str, float]] = {}
+_CONCERN_POS_SCORES: dict[str, dict[str, float]] = {}
+_CONCERN_NEG_SCORES: dict[str, dict[str, float]] = {}
 _BADGE_MAP: dict[str, str] = {}         # ingredient_norm → badge string
 _DESKRIPSI_MAP: dict[str, str] = {}     # ingredient_norm → deskripsi bahasa Indonesia
 
@@ -96,6 +114,8 @@ def _load_knowledge():
     - Format LAMA: kolom Ingredient, Jenis Kulit Cocok/Hindari, Masalah Kulit Cocok/Hindari, Badge
     """
     global _SKIN_COCOK, _SKIN_HINDARI, _CONCERN_COCOK, _CONCERN_HINDARI
+    global _SKIN_POS_SCORES, _SKIN_NEG_SCORES
+    global _CONCERN_POS_SCORES, _CONCERN_NEG_SCORES
     global _BADGE_MAP, _DESKRIPSI_MAP
 
     knowledge_path = os.path.join(_DATASET_DIR, 'Dataset Terbaru.csv')
@@ -103,10 +123,43 @@ def _load_knowledge():
 
     cols = set(df.columns.tolist())
 
+    # Bersihkan lookup agar aman jika loader dipanggil ulang saat pengembangan.
+    for lookup in (
+        _SKIN_COCOK, _SKIN_HINDARI, _CONCERN_COCOK, _CONCERN_HINDARI,
+        _SKIN_POS_SCORES, _SKIN_NEG_SCORES,
+        _CONCERN_POS_SCORES, _CONCERN_NEG_SCORES,
+        _BADGE_MAP, _DESKRIPSI_MAP,
+    ):
+        lookup.clear()
+
+    def _store_max_score(
+        lookup: dict[str, dict[str, float]],
+        ingredient: str,
+        target: str,
+        score: float,
+    ) -> None:
+        target_scores = lookup.setdefault(ingredient, {})
+        target_scores[target] = max(score, target_scores.get(target, 0.0))
+
+    def _row_score(row: pd.Series, column: str) -> float:
+        """Ambil skor numerik; format lama/tanpa kolom skor diberi nilai 1."""
+        if column not in cols:
+            return 1.0
+        value = pd.to_numeric(row.get(column), errors='coerce')
+        return 0.0 if pd.isna(value) else max(0.0, float(value))
+
     # ── Deteksi format dataset ────────────────────────────────────────────────
     is_new_format = 'ingredient_name' in cols and 'domain' in cols and 'target' in cols
 
     if is_new_format:
+        # Bila tersedia, gunakan hanya hasil aturan badge yang menjadi dasar
+        # perhitungan pada notebook WSM penelitian.
+        if 'matched_rule' in cols:
+            matched_rule = df['matched_rule'].astype(str).str.strip().str.lower()
+            raw_badge_rows = matched_rule.eq('raw_badge_match')
+            if raw_badge_rows.any():
+                df = df.loc[raw_badge_rows].copy()
+
         # Format BARU: setiap baris = 1 aturan (1 ingredien x 1 target x domain x polarity)
         for _, row in df.iterrows():
             name_raw = str(row.get('ingredient_name', '')).strip()
@@ -126,14 +179,30 @@ def _load_knowledge():
             if domain == 'skin_type':
                 if polarity == 'positif':
                     _SKIN_COCOK.setdefault(name_norm, set()).add(target_norm)
+                    _store_max_score(
+                        _SKIN_POS_SCORES, name_norm, target_norm,
+                        _row_score(row, 'benefit_score'),
+                    )
                 elif polarity == 'negatif':
                     _SKIN_HINDARI.setdefault(name_norm, set()).add(target_norm)
+                    _store_max_score(
+                        _SKIN_NEG_SCORES, name_norm, target_norm,
+                        _row_score(row, 'penalty_score'),
+                    )
 
             elif domain == 'concern':
                 if polarity == 'positif':
                     _CONCERN_COCOK.setdefault(name_norm, set()).add(target_norm)
+                    _store_max_score(
+                        _CONCERN_POS_SCORES, name_norm, target_norm,
+                        _row_score(row, 'benefit_score'),
+                    )
                 elif polarity == 'negatif':
                     _CONCERN_HINDARI.setdefault(name_norm, set()).add(target_norm)
+                    _store_max_score(
+                        _CONCERN_NEG_SCORES, name_norm, target_norm,
+                        _row_score(row, 'penalty_score'),
+                    )
 
             # Badge — pakai badge_text dari dataset baru
             badge = str(row.get('badge_text', '')).strip()
@@ -169,6 +238,17 @@ def _load_knowledge():
             _SKIN_HINDARI.setdefault(name_norm, set()).update(skin_hindari)
             _CONCERN_COCOK.setdefault(name_norm, set()).update(concern_cocok)
             _CONCERN_HINDARI.setdefault(name_norm, set()).update(concern_hindari)
+
+            # Format lama tidak memiliki benefit_score/penalty_score, sehingga
+            # setiap aturan relevan diberi skor dasar 1.0.
+            for target_norm in skin_cocok:
+                _store_max_score(_SKIN_POS_SCORES, name_norm, target_norm, 1.0)
+            for target_norm in skin_hindari:
+                _store_max_score(_SKIN_NEG_SCORES, name_norm, target_norm, 1.0)
+            for target_norm in concern_cocok:
+                _store_max_score(_CONCERN_POS_SCORES, name_norm, target_norm, 1.0)
+            for target_norm in concern_hindari:
+                _store_max_score(_CONCERN_NEG_SCORES, name_norm, target_norm, 1.0)
 
             badge = str(row.get('Badge', '')).strip()
             if badge and badge != 'nan':
@@ -256,18 +336,32 @@ def _parse_ingredients(ingr_text: str) -> list[dict]:
 def _classify(score: float) -> str:
     """
     Klasifikasi skor WSM ke kategori rekomendasi.
-    Menggunakan Laplace Smoothing, skor default/netral adalah 0.5.
-    
+
     Threshold:
-      >= 0.65 → Sangat Direkomendasikan
-      >= 0.52 → Cukup Direkomendasikan
-      <  0.52 → Tidak Direkomendasikan
+      >= 0.75 → Sangat Direkomendasikan
+      >= 0.50 → Cukup Direkomendasikan
+      <  0.50 → Tidak Direkomendasikan
     """
-    if score >= 0.65:
+    if score >= 0.75:
         return 'Sangat Direkomendasikan'
-    elif score >= 0.52:
+    elif score >= 0.50:
         return 'Cukup Direkomendasikan'
     return 'Tidak Direkomendasikan'
+
+
+def _regularized_ratio(benefit: float, penalty: float) -> float:
+    """Hitung rasio benefit-penalty dengan regularisasi lambda."""
+    evidence = benefit + penalty
+    if evidence <= 0:
+        # Tidak ada aturan relevan bukan berarti cocok 50%; kriteria ini tidak
+        # menyumbang skor rekomendasi.
+        return 0.0
+
+    return (
+        benefit + (REGULARIZATION_LAMBDA / 2.0)
+    ) / (
+        evidence + REGULARIZATION_LAMBDA
+    )
 
 
 def _score_product_wsm(
@@ -277,18 +371,20 @@ def _score_product_wsm(
     kategori_frontend: str | None = None,
 ) -> dict:
     """
-    Hitung WSM score menggunakan Laplace Smoothing.
+    Hitung skor WSM tiga kriteria dengan rasio terregularisasi.
 
-    Formula Laplace: (Benefit + Alpha) / (Benefit + Penalty + 2 * Alpha)
-    Alpha = 1.0 (bobot smoothing).
-    Ini mencegah skor ekstrem (seperti 100%) jika hanya 1 ingredien cocok,
-    tanpa memberikan penalti pada ingredien inaktif (seperti air/pengawet)
-    yang tidak ada di dataset.
+    C1: rasio skor benefit/penalty terhadap jenis kulit.
+    C2: rasio skor benefit/penalty terhadap masalah kulit.
+    C3: rasio posisi ingredient positif/negatif yang relevan.
+
+    Untuk satu ingredient yang memiliki beberapa badge atau beberapa masalah
+    terpilih, skor maksimum per domain dipakai agar aturan tidak terhitung
+    berulang. C4 tidak lagi menjadi bagian perhitungan WSM.
     """
     if len(ingredients) == 0:
         return {
-            'wsm_score': 0.5, 'kategori_rekomendasi': _classify(0.5),
-            'C1': 0.5, 'C2': 0.5, 'C3': 0.5, 'C4': 0.5,
+            'wsm_score': 0.0, 'kategori_rekomendasi': _classify(0.0),
+            'C1': 0.0, 'C2': 0.0, 'C3': 0.0,
             'cocok_names': [], 'tidak_names': [], 'ingredients_analysis': [],
         }
 
@@ -296,19 +392,9 @@ def _score_product_wsm(
     cocok_names  = []
     tidak_names  = []
 
-    # Position-weighted accumulators
-    B1, P1 = 0.0, 0.0   # C1: skin type benefit/penalty
-    B2, P2 = 0.0, 0.0   # C2: concern benefit/penalty
-    B3, P3 = 0.0, 0.0   # C3: position (combined relevance)
-    B4, P4 = 0.0, 0.0   # C4: safety (combined)
-
-    # Whitelist surfaktan (Rinse-off suppression) untuk cleanser
-    RINSE_OFF_SURFACTANTS = {
-        'sodium cocoyl glycinate', 'disodium cocoyl glutamate', 'cocamidopropyl betaine',
-        'potassium cocoyl glycinate', 'potassium cocoate', 'sodium laureth sulfate',
-        'sodium lauryl sulfate', 'lauramidopropyl betaine', 'sodium cocoyl isethionate',
-        'peg-40 hydrogenated castor oil'
-    }
+    B1, P1 = 0.0, 0.0   # C1: total skor jenis kulit
+    B2, P2 = 0.0, 0.0   # C2: total skor masalah kulit
+    B3, P3 = 0.0, 0.0   # C3: total bobot posisi ingredient relevan
 
     for ing in ingredients:
         norm   = ing['name_norm']
@@ -317,28 +403,32 @@ def _score_product_wsm(
         pos_w = POSITIVE_POSITION_WEIGHT.get(bucket, 0.33)
         neg_w = NEGATIVE_POSITION_WEIGHT.get(bucket, 0.40)
 
-        skin_pos   = 1.0 if skin_type_norm in _SKIN_COCOK.get(norm, set())   else 0.0
-        skin_neg   = 1.0 if skin_type_norm in _SKIN_HINDARI.get(norm, set()) else 0.0
-        concern_pos = 1.0 if concern_labels_norm & _CONCERN_COCOK.get(norm, set())   else 0.0
-        concern_neg = 1.0 if concern_labels_norm & _CONCERN_HINDARI.get(norm, set()) else 0.0
+        skin_pos = _SKIN_POS_SCORES.get(norm, {}).get(skin_type_norm, 0.0)
+        skin_neg = _SKIN_NEG_SCORES.get(norm, {}).get(skin_type_norm, 0.0)
 
-        # Rinse-off suppression: jika produk cleanser, abaikan penalti untuk surfaktan pembersih
-        if kategori_frontend == 'cleanser' and norm in RINSE_OFF_SURFACTANTS:
-            skin_neg = 0.0
-            concern_neg = 0.0
+        # Jika pengguna memilih lebih dari satu masalah kulit, gunakan skor
+        # maksimum per ingredient agar satu bahan tidak diakumulasi berulang.
+        concern_pos_scores = _CONCERN_POS_SCORES.get(norm, {})
+        concern_neg_scores = _CONCERN_NEG_SCORES.get(norm, {})
+        concern_pos = max(
+            (concern_pos_scores.get(label, 0.0) for label in concern_labels_norm),
+            default=0.0,
+        )
+        concern_neg = max(
+            (concern_neg_scores.get(label, 0.0) for label in concern_labels_norm),
+            default=0.0,
+        )
 
         has_skin_rule = (skin_pos > 0 or skin_neg > 0)
         has_conc_rule = (concern_pos > 0 or concern_neg > 0)
         has_any_rule  = has_skin_rule or has_conc_rule
 
-        # Accumulate per-criteria
-        if has_skin_rule:
-            B1 += skin_pos   * pos_w
-            P1 += skin_neg   * neg_w
-
-        if has_conc_rule:
-            B2 += concern_pos * pos_w
-            P2 += concern_neg * neg_w
+        # C1 dan C2 memakai skor benefit/penalty asli dari basis pengetahuan.
+        # Posisi hanya menjadi kriteria tersendiri pada C3.
+        B1 += skin_pos
+        P1 += skin_neg
+        B2 += concern_pos
+        P2 += concern_neg
 
         # C3: position score
         if has_any_rule:
@@ -346,11 +436,6 @@ def _score_product_wsm(
                 B3 += pos_w
             if max(skin_neg, concern_neg) > 0:
                 P3 += neg_w
-
-        # C4: safety
-        if has_any_rule:
-            B4 += max(skin_pos, concern_pos) * pos_w
-            P4 += max(skin_neg, concern_neg) * neg_w
 
         is_positive = (skin_pos > 0) or (concern_pos > 0)
         is_negative = (skin_neg > 0) or (concern_neg > 0)
@@ -378,22 +463,16 @@ def _score_product_wsm(
             'deskripsi': _DESKRIPSI_MAP.get(norm, ''),
         })
 
-    # ── Laplace Smoothing (Alpha = 1.0) ──────────────────────────────────────
-    # Mencegah (1 / 1) = 100% dari 1 ingredien,
-    # (1 + 1) / (1 + 0 + 2) = 66% (lebih realistis)
-    alpha = 1.0
-
-    C1 = (B1 + alpha) / (B1 + P1 + 2 * alpha)
-    C2 = (B2 + alpha) / (B2 + P2 + 2 * alpha)
-    C3 = (B3 + alpha) / (B3 + P3 + 2 * alpha)
-    C4 = (B4 + alpha) / (B4 + P4 + 2 * alpha)
+    # ── Rasio terregularisasi (lambda = 2) ─────────────────────────────────
+    C1 = _regularized_ratio(B1, P1)
+    C2 = _regularized_ratio(B2, P2)
+    C3 = _regularized_ratio(B3, P3)
 
     # ── WSM Final ─────────────────────────────────────────────────────────────
     wsm = (
         WEIGHTS['C1_skin_type'] * C1 +
         WEIGHTS['C2_concern']   * C2 +
-        WEIGHTS['C3_position']  * C3 +
-        WEIGHTS['C4_safety']    * C4
+        WEIGHTS['C3_position']  * C3
     )
 
     return {
@@ -402,7 +481,6 @@ def _score_product_wsm(
         'C1': round(C1, 4),
         'C2': round(C2, 4),
         'C3': round(C3, 4),
-        'C4': round(C4, 4),
         'cocok_names':          cocok_names,
         'tidak_names':          tidak_names,
         'ingredients_analysis': ing_analysis,
@@ -507,7 +585,6 @@ def score_products(
                 'C1': wsm_result['C1'],
                 'C2': wsm_result['C2'],
                 'C3': wsm_result['C3'],
-                'C4': wsm_result['C4'],
             },
         })
 
