@@ -14,18 +14,35 @@ INIT_CONFIG = {
 }
 
 def init_database():
+    db_name = os.environ.get('DB_NAME', 'bglow_db')
+    conn = None
+    is_direct = False
+    
     try:
-        # Koneksi ke MySQL server
-        conn = mysql.connector.connect(**INIT_CONFIG)
-        if conn.is_connected():
+        # Coba koneksi langsung dengan nama database terlebih dahulu
+        config_with_db = {**INIT_CONFIG, 'database': db_name}
+        conn = mysql.connector.connect(**config_with_db)
+        is_direct = True
+    except Error:
+        try:
+            # Jika gagal (db belum ada), koneksi tanpa database untuk membuatnya
+            conn = mysql.connector.connect(**INIT_CONFIG)
+        except Error as conn_err:
+            print(f"Error connecting to MySQL: {conn_err}")
+            return
+
+    try:
+        if conn and conn.is_connected():
             cursor = conn.cursor()
             
-            # Buat database jika belum ada
-            cursor.execute("CREATE DATABASE IF NOT EXISTS bglow_db")
-            print("Database 'bglow_db' checked/created.")
+            if not is_direct:
+                try:
+                    cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+                    print(f"Database '{db_name}' checked/created.")
+                except Error as db_err:
+                    print(f"Warning: Could not create database '{db_name}': {db_err}")
             
-            # Gunakan database tersebut
-            cursor.execute("USE bglow_db")
+            cursor.execute(f"USE {db_name}")
             
             # 1. Buat tabel users jika belum ada (hanya memuat data core profile)
             create_users_table = """

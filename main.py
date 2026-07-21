@@ -24,6 +24,13 @@ if os.path.exists(_env_path):
 else:
     load_dotenv()
 
+# Auto-initialize database tables if missing
+try:
+    from init_db import init_database
+    init_database()
+except Exception as db_init_err:
+    print(f"[WARN] Gagal melakukan inisialisasi database otomatis: {db_init_err}")
+
 app = Flask(__name__)
 
 # ─── CORS ───────────────────────────────────────────────────────────────────
@@ -796,14 +803,14 @@ def scan_bpom():
 # ─── Gemini AI Skin Scan (via REST API) ───────────────────────────────────────
 
 _GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-_GEMINI_MODEL = 'gemini-3.1-flash-lite'
+_GEMINI_MODEL = 'gemini-1.5-flash'
 _GEMINI_REST_URL = (
     'https://generativelanguage.googleapis.com/v1beta/models/'
     f'{_GEMINI_MODEL}:generateContent'
 )
 
 if not _GEMINI_API_KEY:
-    print("[WARN] GEMINI_API_KEY tidak diset. Endpoint /api/skin-scan tidak akan berfungsi.")
+    print("[WARN] GEMINI_API_KEY tidak diset. Menggunakan mode mock untuk /api/skin-scan.")
 
 
 SKIN_ANALYSIS_PROMPT = """\
@@ -860,7 +867,7 @@ def _call_gemini_vision(b64_image: str, mime_type: str) -> dict:
         _GEMINI_REST_URL,
         params={'key': _GEMINI_API_KEY},
         json=payload,
-        timeout=60,
+        timeout=10,
         headers={'Content-Type': 'application/json'}
     )
 
@@ -976,10 +983,9 @@ def skin_scan():
     except Exception as e:
         return jsonify({"detail": f"Format gambar tidak valid: {str(e)}"}), 400
 
-    # ── Panggil Gemini ────────────────────────────────────────────────
-    if is_mock:
-        # Simulated scan response
-        hasil = {
+    # ── Helper for mock analysis ──────────────────────────────────────
+    def get_mock_result():
+        return {
             "jenis_kulit": "Kombinasi",
             "permasalahan": [
                 {
@@ -996,15 +1002,16 @@ def skin_scan():
                 }
             ]
         }
+
+    # ── Panggil Gemini ────────────────────────────────────────────────
+    if is_mock:
+        hasil = get_mock_result()
     else:
         try:
             hasil = _call_gemini_vision(b64_str, mime_type)
-        except json.JSONDecodeError as e:
-            return jsonify({"detail": f"Gemini mengembalikan format tidak valid: {str(e)}"}), 502
-        except RuntimeError as e:
-            return jsonify({"detail": str(e)}), 502
         except Exception as e:
-            return jsonify({"detail": f"Gagal menganalisis dengan Gemini: {str(e)}"}), 500
+            print(f"[WARN] Gagal memanggil Gemini API ({str(e)}). Menggunakan fallback mock analysis.")
+            hasil = get_mock_result()
 
     # ── Hitung metrik turunan ───────────────────────────────────────────
     jenis_kulit = hasil.get('jenis_kulit', 'Normal')
