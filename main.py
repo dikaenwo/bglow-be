@@ -815,27 +815,44 @@ else:
 
 
 SKIN_ANALYSIS_PROMPT = """\
-Anda adalah dermatologis profesional yang menganalisis kondisi kulit wajah.
-Analisis gambar ini dengan cermat.
-Kembalikan respons HANYA dalam format JSON valid tanpa teks tambahan, tanpa markdown, tanpa penjelasan.
+Anda adalah pakar Dermatologis Klinis dan spesialis analisis citra kulit (Dermatoskopi AI).
+Tugas Anda: Lakukan pemindaian medis dan analisis kondisi kulit wajah pada gambar secara akurat dan sangat teliti.
 
-Struktur JSON yang harus dikembalikan:
+=== PANDUAN DEFINISI VISUAL KLINIS KONDISI KULIT ===
+Pahami perbedaan spesifik berikut sebelum memberi label:
+1. "Jerawat" (Papula/Pustula/Nodul): Benjolan menonjol, meradang, seringkali memiliki titik putih/kuning di tengah (nanah) atau kemerahan bengkak yang terisolasi.
+2. "PIE" (Post-Inflammatory Erythema): Noda/bekas jerawat berwarna MERAH MUDA hingga MERAH CERAH akibat pelebaran pembuluh darah pasca-inflamasi (datar, bukan benjolan nanah).
+3. "PIH" (Post-Inflammatory Hyperpigmentation): Noda/bekas jerawat berwarna COKLAT KEHITAMAN atau GELAP akibat penumpukan melanin (datar, bukan kemerahan).
+4. "Bopeng" (Atrophic Acne Scars): Bekas jerawat berupa CEKUNGAN / LUBANG pada tekstur kulit (Ice pick scar, Boxcar, atau Rolling scar).
+5. "Hiperpigmentasi": Flek hitam, melasma, bercak kecokelatan merata, atau warna kulit tidak merata akibat paparan sinar matahari/penuaan.
+6. "Kemerahan" (Erythema / Irritation): Area kemerahan yang meluas/melebar (seperti di pipi, hidung, dagu) akibat iritasi, rosacea, atau barrier kulit yang terganggu.
+
+=== PANDUAN PENENTUAN JENIS KULIT ===
+- "Berminyak": Terlihat kilap/kilatan minyak (sebum shine) merata di seluruh wajah (dahi, hidung, pipi, dagu).
+- "Kombinasi": Terlihat kilap minyak terutama di area T-Zone (dahi & hidung), sedangkan area pipi cenderung normal/kering.
+- "Kering": Kulit tampak kusam, bersisik/flaky, terasa kencang, tanpa kilap minyak sama sekali.
+- "Normal": Produksi minyak seimbang, tekstur halus, tidak mengkilap berlebih dan tidak bersisik.
+
+=== ATURAN BOUNDING BOX (box_2d) & CONFIDENCE ===
+- Koordinat [ymin, xmin, ymax, xmax] harus PRESISI mengurung HANYA titik/area permasalahan tersebut. Skala [0-1000] relatif terhadap tinggi dan lebar gambar.
+- Jangan membuat box_2d raksasa yang mencakup seluruh wajah. Setiap jerawat / noda individu atau area iritasi lokal harus memiliki box_2d masing-masing.
+- Berikan skor "confidence" realistis (0.50 - 0.99) berdasarkan kejelasan visual pada gambar.
+- Jika kulit bersih tanpa masalah yang jelas, kembalikan array "permasalahan": [].
+
+=== FORMAT OUTPUT (HANYA JSON VALID) ===
+Kembalikan respon HANYA berupa JSON valid tanpa markdown, tanpa teks pembuka/penutup.
+
+Struktur JSON:
 {
   "jenis_kulit": "Normal" | "Berminyak" | "Kombinasi" | "Kering",
   "permasalahan": [
     {
       "label": "Jerawat" | "PIE" | "PIH" | "Bopeng" | "Hiperpigmentasi" | "Kemerahan",
       "box_2d": [ymin, xmin, ymax, xmax],
-      "confidence": 0.0
+      "confidence": 0.92
     }
   ]
 }
-
-Catatan:
-- box_2d menggunakan skala 0-1000 relatif terhadap ukuran gambar (bukan piksel)
-- confidence adalah nilai 0.0 hingga 1.0
-- Jika kulit bersih tanpa masalah, kembalikan array permasalahan kosong []
-- Deteksi SEMUA area permasalahan kulit yang terlihat
 """
 
 
@@ -847,7 +864,10 @@ def _call_gemini_vision(b64_image: str, mime_type: str) -> dict:
     img_bytes = base64.b64decode(b64_image)
     pil_img = Image.open(io.BytesIO(img_bytes))
 
-    model = genai.GenerativeModel(_GEMINI_MODEL)
+    model = genai.GenerativeModel(
+        model_name=_GEMINI_MODEL,
+        generation_config={"temperature": 0.1, "top_p": 0.95}
+    )
     response = model.generate_content([SKIN_ANALYSIS_PROMPT, pil_img])
 
     raw_text = response.text.strip()
