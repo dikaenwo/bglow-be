@@ -8,3 +8,5 @@ beautifulsoup4
 pandas
 openpyxl
 werkzeug
+google-generativeai
+Pillow

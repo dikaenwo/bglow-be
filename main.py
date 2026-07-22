@@ -16,6 +16,9 @@ from bs4 import BeautifulSoup
 import re
 from urllib.parse import unquote
 from recommender import score_products
+import io
+from PIL import Image
+import google.generativeai as genai
 
 # Muat .env jika ada (untuk development lokal)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
@@ -800,16 +803,14 @@ def scan_bpom():
         return jsonify({"detail": f"Gagal memindai data: {str(e)}"}), 500
 
 
-# ─── Gemini AI Skin Scan (via REST API) ───────────────────────────────────────
+# ─── Gemini AI Skin Scan (via Official SDK) ───────────────────────────────────
 
 _GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-_GEMINI_MODEL = 'gemini-2.0-flash'
-_GEMINI_REST_URL = (
-    'https://generativelanguage.googleapis.com/v1beta/models/'
-    f'{_GEMINI_MODEL}:generateContent'
-)
+_GEMINI_MODEL = 'gemini-3.1-flash-lite'
 
-if not _GEMINI_API_KEY:
+if _GEMINI_API_KEY:
+    genai.configure(api_key=_GEMINI_API_KEY)
+else:
     print("[WARN] GEMINI_API_KEY tidak diset. Menggunakan mode mock untuk /api/skin-scan.")
 
 
@@ -840,58 +841,19 @@ Catatan:
 
 def _call_gemini_vision(b64_image: str, mime_type: str) -> dict:
     """
-    Panggil Gemini REST API generateContent dengan gambar inline (base64).
+    Panggil Gemini via official SDK (google.generativeai) dengan PIL Image.
     Kembalikan dict hasil parse JSON dari Gemini.
     """
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": SKIN_ANALYSIS_PROMPT},
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": b64_image
-                        }
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 1024,
-        }
-    }
+    img_bytes = base64.b64decode(b64_image)
+    pil_img = Image.open(io.BytesIO(img_bytes))
 
-    resp = req.post(
-        _GEMINI_REST_URL,
-        params={'key': _GEMINI_API_KEY},
-        json=payload,
-        timeout=12,
-        headers={'Content-Type': 'application/json'}
-    )
+    model = genai.GenerativeModel(_GEMINI_MODEL)
+    response = model.generate_content([SKIN_ANALYSIS_PROMPT, pil_img])
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:300]}")
-
-    resp_data = resp.json()
-    try:
-        raw_text = resp_data['candidates'][0]['content']['parts'][0]['text'].strip()
-    except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Respons Gemini tidak terduga: {str(resp_data)[:200]}")
-
-    # Bersihkan markdown fence jika ada
-    clean = raw_text
-    if clean.startswith('```'):
-        lines = clean.split('\n')
-        # Buang baris pertama (```json atau ```) dan terakhir (```)
-        inner = lines[1:] if len(lines) > 1 else lines
-        if inner and inner[-1].strip() == '```':
-            inner = inner[:-1]
-        clean = '\n'.join(inner)
-    clean = clean.replace('```json', '').replace('```', '').strip()
-
+    raw_text = response.text.strip()
+    clean = raw_text.replace("```json", "").replace("```", "").strip()
     return json.loads(clean)
+
 
 
 def _calculate_skin_score(permasalahan_list: list) -> int:
