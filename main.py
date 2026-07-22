@@ -945,109 +945,105 @@ def _derive_pore_condition(permasalahan_list: list, jenis_kulit: str) -> str:
 
 @app.route("/api/skin-scan", methods=["POST"])
 def skin_scan():
-    """Analisis kulit menggunakan Gemini AI Vision (via REST API).
-
-    Body JSON:
-      image    : str  -- Data URL base64 (data:image/jpeg;base64,...) atau base64 murni
-      user_id  : int  -- (opsional) ID user untuk auto-update DB
-
-    Response JSON:
-      jenis_kulit, permasalahan[], skin_score, acne_level, oil_level, pore_condition
-    """
-    is_mock = False
-    if not _GEMINI_API_KEY:
-        is_mock = True
-        print("[WARN] GEMINI_API_KEY tidak diset. Menggunakan mock analysis.")
-
-    data = request.get_json()
-    if not data or 'image' not in data:
-        return jsonify({"detail": "Field 'image' (base64) wajib diisi."}), 400
-
-    image_data_url = data['image']
-    user_id = data.get('user_id')
-
-    # ── Decode base64 ───────────────────────────────────────────────────
+    """Analisis kulit menggunakan Gemini AI Vision (via REST API)."""
     try:
-        mime_type = 'image/jpeg'
-        if ',' in image_data_url:
-            header, b64_str = image_data_url.split(',', 1)
-            if 'png' in header:
-                mime_type = 'image/png'
-            elif 'webp' in header:
-                mime_type = 'image/webp'
-        else:
-            b64_str = image_data_url
+        is_mock = False
+        if not _GEMINI_API_KEY:
+            is_mock = True
+            print("[WARN] GEMINI_API_KEY tidak diset. Menggunakan mock analysis.")
 
-        # Validasi base64
-        base64.b64decode(b64_str, validate=True)
-    except Exception as e:
-        return jsonify({"detail": f"Format gambar tidak valid: {str(e)}"}), 400
+        data = request.get_json()
+        if not data or 'image' not in data:
+            return jsonify({"detail": "Field 'image' (base64) wajib diisi."}), 400
 
-    # ── Helper for mock analysis ──────────────────────────────────────
-    def get_mock_result():
-        return {
-            "jenis_kulit": "Kombinasi",
-            "permasalahan": [
-                {
-                    "label": "Jerawat",
-                    "deskripsi": "Jerawat kemerahan ringan di area pipi.",
-                    "box_2d": [300, 400, 350, 460],
-                    "confidence": 0.89
-                },
-                {
-                    "label": "Pori-pori Besar",
-                    "deskripsi": "Pori-pori tampak melebar di area T-zone.",
-                    "box_2d": [450, 480, 520, 560],
-                    "confidence": 0.85
-                }
-            ]
-        }
+        image_data_url = data['image']
+        user_id = data.get('user_id')
 
-    # ── Panggil Gemini ────────────────────────────────────────────────
-    if is_mock:
-        hasil = get_mock_result()
-    else:
+        # ── Decode base64 ───────────────────────────────────────────────────
         try:
-            hasil = _call_gemini_vision(b64_str, mime_type)
+            mime_type = 'image/jpeg'
+            if ',' in image_data_url:
+                header, b64_str = image_data_url.split(',', 1)
+                if 'png' in header:
+                    mime_type = 'image/png'
+                elif 'webp' in header:
+                    mime_type = 'image/webp'
+            else:
+                b64_str = image_data_url
+
+            # Validasi base64
+            base64.b64decode(b64_str, validate=True)
         except Exception as e:
-            print(f"[WARN] Gagal memanggil Gemini API ({str(e)}). Menggunakan fallback mock analysis.")
+            return jsonify({"detail": f"Format gambar tidak valid: {str(e)}"}), 400
+
+        # ── Helper for mock analysis ──────────────────────────────────────
+        def get_mock_result():
+            return {
+                "jenis_kulit": "Kombinasi",
+                "permasalahan": [
+                    {
+                        "label": "Jerawat",
+                        "deskripsi": "Jerawat kemerahan ringan di area pipi.",
+                        "box_2d": [300, 400, 350, 460],
+                        "confidence": 0.89
+                    },
+                    {
+                        "label": "Pori-pori Besar",
+                        "deskripsi": "Pori-pori tampak melebar di area T-zone.",
+                        "box_2d": [450, 480, 520, 560],
+                        "confidence": 0.85
+                    }
+                ]
+            }
+
+        # ── Panggil Gemini ────────────────────────────────────────────────
+        if is_mock:
             hasil = get_mock_result()
+        else:
+            try:
+                hasil = _call_gemini_vision(b64_str, mime_type)
+            except Exception as e:
+                print(f"[WARN] Gagal memanggil Gemini API ({str(e)}). Menggunakan fallback mock analysis.")
+                hasil = get_mock_result()
 
-    # ── Hitung metrik turunan ───────────────────────────────────────────
-    jenis_kulit = hasil.get('jenis_kulit', 'Normal')
-    permasalahan_list = hasil.get('permasalahan', [])
+        # ── Hitung metrik turunan ───────────────────────────────────────────
+        jenis_kulit = hasil.get('jenis_kulit', 'Normal')
+        permasalahan_list = hasil.get('permasalahan', [])
 
-    skin_score      = _calculate_skin_score(permasalahan_list)
-    acne_level      = _derive_acne_level(permasalahan_list)
-    oil_level       = _derive_oil_level(jenis_kulit)
-    pore_condition  = _derive_pore_condition(permasalahan_list, jenis_kulit)
+        skin_score      = _calculate_skin_score(permasalahan_list)
+        acne_level      = _derive_acne_level(permasalahan_list)
+        oil_level       = _derive_oil_level(jenis_kulit)
+        pore_condition  = _derive_pore_condition(permasalahan_list, jenis_kulit)
 
-    # ── Optional: Update DB user ─────────────────────────────────────────
-    if user_id:
-        try:
-            conn = get_db_connection()
-            if conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE users
-                    SET skin_type=%s, acne_level=%s, oil_level=%s,
-                        pore_condition=%s, skin_score=%s
-                    WHERE id=%s
-                """, (jenis_kulit, acne_level, oil_level, pore_condition, skin_score, user_id))
-                conn.commit()
-                cursor.close()
-                conn.close()
-        except Exception as e:
-            print(f"[WARN] Gagal update skin data user {user_id}: {e}")
+        # ── Optional: Update DB user ─────────────────────────────────────────
+        if user_id:
+            try:
+                conn = get_db_connection()
+                if conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        UPDATE users
+                        SET skin_type=%s, acne_level=%s, oil_level=%s,
+                            pore_condition=%s, skin_score=%s
+                        WHERE id=%s
+                    """, (jenis_kulit, acne_level, oil_level, pore_condition, skin_score, user_id))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+            except Exception as e:
+                print(f"[WARN] Gagal update skin data user {user_id}: {e}")
 
-    return jsonify({
-        "jenis_kulit":      jenis_kulit,
-        "permasalahan":     permasalahan_list,
-        "skin_score":       skin_score,
-        "acne_level":       acne_level,
-        "oil_level":        oil_level,
-        "pore_condition":   pore_condition,
-    }), 200
+        return jsonify({
+            "jenis_kulit":      jenis_kulit,
+            "permasalahan":     permasalahan_list,
+            "skin_score":       skin_score,
+            "acne_level":       acne_level,
+            "oil_level":        oil_level,
+            "pore_condition":   pore_condition,
+        }), 200
+    except Exception as general_err:
+        print(f"[ERROR] Exception in skin_scan route: {general_err}")
+        return jsonify({"detail": f"Terjadi kesalahan internal server: {str(general_err)}"}), 500
 
 
 # ─── Rekomendasi Produk (Berbasis Ingredien) ──────────────────────────────────
