@@ -36,7 +36,7 @@ app = Flask(__name__)
 # ─── CORS ───────────────────────────────────────────────────────────────────
 # Di production, ganti dengan origin spesifik via env var CORS_ORIGINS
 _cors_origins = os.environ.get('CORS_ORIGINS', '*')
-CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
+CORS(app, resources={r"/api/*": {"origins": _cors_origins, "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"]}})
 
 # ─── JWT Config ─────────────────────────────────────────────────────────────
 # Di production, WAJIB set JWT_SECRET_KEY di environment variable VPS!
