@@ -823,8 +823,8 @@ Pahami perbedaan spesifik berikut sebelum memberi label:
 1. "Jerawat" (Papula/Pustula/Nodul): Benjolan menonjol, meradang, seringkali memiliki titik putih/kuning di tengah (nanah) atau kemerahan bengkak yang terisolasi.
 2. "PIE" (Post-Inflammatory Erythema): Noda/bekas jerawat berwarna MERAH MUDA hingga MERAH CERAH akibat pelebaran pembuluh darah pasca-inflamasi (datar, bukan benjolan nanah).
 3. "PIH" (Post-Inflammatory Hyperpigmentation): Noda/bekas jerawat berwarna COKLAT KEHITAMAN atau GELAP akibat penumpukan melanin (datar, bukan kemerahan).
-4. "Bopeng" (Atrophic Acne Scars): Bekas jerawat berupa CEKUNGAN / LUBANG pada tekstur kulit (Ice pick scar, Boxcar, atau Rolling scar).
-5. "Hiperpigmentasi": Flek hitam, melasma, bercak kecokelatan merata, atau warna kulit tidak merata akibat paparan sinar matahari/penuaan.
+4. "Aging": Garis-garis halus, kerutan, atau penurunan elastisitas/kekencangan kulit di sekitar mata, dahi, atau senyum.
+5. "Kusam": Kulit yang tampak kusam, warna kulit tidak merata, melasma, atau flek kecokelatan yang kehilangan kilau alami.
 6. "Kemerahan" (Erythema / Irritation): Area kemerahan yang meluas/melebar (seperti di pipi, hidung, dagu) akibat iritasi, rosacea, atau barrier kulit yang terganggu.
 
 === PANDUAN PENENTUAN JENIS KULIT ===
@@ -847,7 +847,7 @@ Struktur JSON:
   "jenis_kulit": "Normal" | "Berminyak" | "Kombinasi" | "Kering",
   "permasalahan": [
     {
-      "label": "Jerawat" | "PIE" | "PIH" | "Bopeng" | "Hiperpigmentasi" | "Kemerahan",
+      "label": "Jerawat" | "PIE" | "PIH" | "Aging" | "Kusam" | "Kemerahan",
       "box_2d": [ymin, xmin, ymax, xmax],
       "confidence": 0.92
     }

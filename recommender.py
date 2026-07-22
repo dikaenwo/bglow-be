@@ -58,8 +58,8 @@ PROBLEM_LABEL_MAP = {
     'Jerawat':         'Berjerawat',
     'PIE':             'PIE',
     'PIH':             'PIH',
-    'Bopeng':          'PIE',
-    'Hiperpigmentasi': 'PIH',
+    'Aging':           'PIE',
+    'Kusam':           'PIH',
     'Kemerahan':       'Kemerahan',
 }
 
