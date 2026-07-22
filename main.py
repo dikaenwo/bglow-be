@@ -803,7 +803,7 @@ def scan_bpom():
 # ─── Gemini AI Skin Scan (via REST API) ───────────────────────────────────────
 
 _GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-_GEMINI_MODEL = 'gemini-2.5-flash'
+_GEMINI_MODEL = 'gemini-3.1-flash-lite'
 _GEMINI_REST_URL = (
     'https://generativelanguage.googleapis.com/v1beta/models/'
     f'{_GEMINI_MODEL}:generateContent'
