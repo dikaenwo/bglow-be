@@ -803,7 +803,7 @@ def scan_bpom():
 # ─── Gemini AI Skin Scan (via REST API) ───────────────────────────────────────
 
 _GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-_GEMINI_MODEL = 'gemini-1.5-flash'
+_GEMINI_MODEL = 'gemini-2.0-flash'
 _GEMINI_REST_URL = (
     'https://generativelanguage.googleapis.com/v1beta/models/'
     f'{_GEMINI_MODEL}:generateContent'
@@ -867,7 +867,7 @@ def _call_gemini_vision(b64_image: str, mime_type: str) -> dict:
         _GEMINI_REST_URL,
         params={'key': _GEMINI_API_KEY},
         json=payload,
-        timeout=10,
+        timeout=30,
         headers={'Content-Type': 'application/json'}
     )
 
