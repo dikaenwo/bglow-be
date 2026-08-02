@@ -243,6 +243,44 @@ def fetch_extra_user_data(cursor, user_id):
 
 # ─── Public Endpoints (tidak butuh token) ───────────────────────────────────
 
+@app.route("/api/register-otp", methods=["POST"])
+def send_register_otp():
+    data = request.get_json()
+    if not data or 'email' not in data:
+        return jsonify({"detail": "Email wajib diisi"}), 400
+
+    email = data['email'].strip()
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"detail": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+        existing_user = cursor.fetchone()
+        if existing_user:
+            return jsonify({"detail": "Email sudah terdaftar"}), 400
+
+        # Generate 4-digit OTP
+        otp_code = str(random.randint(1000, 9999))
+
+        # Send OTP email via SMTP
+        sent = send_otp_email(email, otp_code)
+
+        return jsonify({
+            "message": "Kode OTP pendaftaran telah dikirim",
+            "otp": otp_code,
+            "email": email,
+            "email_sent": sent
+        }), 200
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
 @app.route("/api/register", methods=["POST"])
 def register_user():
     data = request.get_json()
