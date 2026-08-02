@@ -509,6 +509,30 @@ def get_user_profile(user_id):
             conn.close()
 
 
+@app.route("/api/user/<int:user_id>", methods=["DELETE"])
+@require_auth
+def delete_user_account(user_id):
+    """Google Play Policy Compliant Account Deletion Endpoint."""
+    if g.current_user_id != user_id:
+        return jsonify({"detail": "Akses tidak diizinkan"}), 403
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"detail": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        conn.commit()
+        return jsonify({"message": "Akun dan seluruh data Anda telah berhasil dihapus secara permanen", "status": "success"}), 200
+    except Exception as e:
+        return jsonify({"detail": f"Gagal menghapus akun: {str(e)}"}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
 @app.route("/api/user/<int:user_id>", methods=["PUT"])
 @require_auth
 def update_user_profile(user_id):
@@ -891,17 +915,11 @@ def _calculate_skin_score(permasalahan_list: list) -> int:
 
 
 def _derive_acne_level(permasalahan_list: list) -> str:
-    """Tentukan acne level dari hasil deteksi."""
+    """Tentukan status jerawat dari hasil deteksi."""
     jerawat = [p for p in permasalahan_list if p.get('label') == 'Jerawat']
     if not jerawat:
-        return 'Tidak Ada'
-    avg_conf = sum(float(p.get('confidence', 0.5)) for p in jerawat) / len(jerawat)
-    if avg_conf >= 0.8:
-        return 'Parah — Grade 3'
-    elif avg_conf >= 0.6:
-        return 'Sedang — Grade 2'
-    else:
-        return 'Ringan — Grade 1'
+        return 'Bersih'
+    return 'Jerawat'
 
 
 def _derive_oil_level(jenis_kulit: str) -> str:
