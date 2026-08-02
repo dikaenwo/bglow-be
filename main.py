@@ -2,6 +2,9 @@ import os
 import jwt
 import secrets
 import random
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 import base64
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -339,6 +342,71 @@ def login_user():
             conn.close()
 
 
+def send_otp_email(to_email: str, otp_code: str) -> bool:
+    """Kirim email OTP asli via SMTP (Gmail / SMTP Server)."""
+    smtp_server = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_EMAIL", "").strip()
+    smtp_pass = os.getenv("SMTP_PASSWORD", "").strip()
+
+    if not smtp_user or not smtp_pass:
+        print(f"[SMTP WARN] SMTP credentials (SMTP_EMAIL, SMTP_PASSWORD) belum diatur di .env. Kode OTP untuk {to_email} adalah: {otp_code}")
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"Kode OTP Pemulihan Kata Sandi B-Glow: {otp_code}"
+        msg["From"] = f"B-Glow Support <{smtp_user}>"
+        msg["To"] = to_email
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 0; padding: 20px; }}
+            .card {{ max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; text-align: center; }}
+            .logo {{ font-size: 24px; font-weight: 800; color: #6366f1; margin-bottom: 8px; }}
+            .title {{ font-size: 18px; font-weight: 700; color: #0f172a; margin-bottom: 12px; }}
+            .otp-box {{ background: #f1f5f9; border-radius: 12px; padding: 16px; font-size: 32px; font-weight: 800; letter-spacing: 8px; color: #4f46e5; margin: 20px 0; border: 1.5px dashed #6366f1; }}
+            .footer {{ font-size: 12px; color: #94a3b8; margin-top: 24px; line-height: 1.5; }}
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="logo">✨ B-Glow</div>
+            <div class="title">Kode OTP Pemulihan Akun</div>
+            <p style="font-size: 14px; color: #475569; line-height: 1.5;">
+              Kami menerima permintaan untuk mengatur ulang kata sandi akun B-Glow Anda. Gunakan kode OTP di bawah ini untuk melanjutkan:
+            </p>
+            <div class="otp-box">{otp_code}</div>
+            <p style="font-size: 13px; color: #64748b;">
+              Kode ini berlaku selama 10 menit. Jangan bagikan kode ini kepada siapa pun.
+            </p>
+            <div class="footer">
+              Jika Anda tidak merasa meminta perubahan kata sandi, abaikan email ini.<br>
+              &copy; B-Glow Skincare Assistant
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+
+        msg.attach(MIMEText(html_content, "html"))
+
+        with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, [to_email], msg.as_string())
+        
+        print(f"[SMTP SUCCESS] Email OTP berhasil dikirim ke {to_email}")
+        return True
+    except Exception as err:
+        print(f"[SMTP ERROR] Gagal mengirim email OTP ke {to_email}: {err}")
+        return False
+
+
 @app.route("/api/forgot-password", methods=["POST"])
 def forgot_password():
     data = request.get_json()
@@ -360,10 +428,15 @@ def forgot_password():
 
         # Generate random 4-digit OTP
         otp_code = str(random.randint(1000, 9999))
+
+        # Kirim email SMTP secara otomatis jika credentials dikonfigurasi
+        sent = send_otp_email(email, otp_code)
+
         return jsonify({
-            "message": "Kode OTP telah dikirim",
+            "message": "Kode OTP telah berhasil dikirim ke email Anda" if sent else "Kode OTP telah dibuat",
             "otp": otp_code,
-            "email": email
+            "email": email,
+            "email_sent": sent
         }), 200
     except Exception as e:
         return jsonify({"detail": str(e)}), 500
