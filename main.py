@@ -344,7 +344,7 @@ def forgot_password():
     if not data or 'email' not in data:
         return jsonify({"detail": "Email wajib diisi"}), 400
 
-    email = data['email']
+    email = data['email'].strip()
     conn = get_db_connection()
     if not conn:
         return jsonify({"detail": "Database connection failed"}), 500
@@ -357,10 +357,11 @@ def forgot_password():
         if not db_user:
             return jsonify({"detail": "Email tidak terdaftar"}), 400
 
-        # Return mock OTP 1234
+        # Generate random 4-digit OTP
+        otp_code = str(random.randint(1000, 9999))
         return jsonify({
-            "message": "Kode OTP telah dikirim (Mock)",
-            "otp": "1234",
+            "message": "Kode OTP telah dikirim",
+            "otp": otp_code,
             "email": email
         }), 200
     except Exception as e:
