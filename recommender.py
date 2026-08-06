@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import functools
 import pandas as pd
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -104,6 +105,10 @@ _BADGE_MAP: dict[str, str] = {}         # ingredient_norm → badge string
 _DESKRIPSI_MAP: dict[str, str] = {}     # ingredient_norm → deskripsi bahasa Indonesia
 
 _df_produk: pd.DataFrame | None = None
+
+# Pre-parsed ingredients per produk — di-build satu kali saat startup
+# key: index row produk (int) → list[dict] hasil _parse_ingredients()
+_PRODUCT_INGREDIENTS_CACHE: dict[int, list[dict]] = {}
 
 
 def _load_knowledge():
@@ -269,10 +274,18 @@ def _load_knowledge():
 
 
 def _load_products():
-    """Load Dataset Produk.xlsx."""
-    global _df_produk
+    """Load Dataset Produk.xlsx dan pre-parse semua ingredient."""
+    global _df_produk, _PRODUCT_INGREDIENTS_CACHE
     produk_path = os.path.join(_DATASET_DIR, 'Dataset Produk.xlsx')
     _df_produk = pd.read_excel(produk_path)
+
+    # Pre-parse ingredient setiap produk saat startup (bukan saat request)
+    _PRODUCT_INGREDIENTS_CACHE.clear()
+    for idx, row in _df_produk.iterrows():
+        ingr_raw = str(row.get('Ingridients', '') or '')
+        if ingr_raw.strip():
+            _PRODUCT_INGREDIENTS_CACHE[idx] = _parse_ingredients(ingr_raw)
+
     return len(_df_produk)
 
 
@@ -491,6 +504,17 @@ def _score_product_wsm(
 # PUBLIC API (signature dipertahankan agar main.py tidak berubah)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@functools.lru_cache(maxsize=64)
+def _score_products_cached(
+    jenis_kulit: str,
+    permasalahan_tuple: tuple,          # tuple agar hashable
+    kategori_frontend: str | None,
+    limit: int,
+) -> list:
+    """Versi cached dari score_products. Dipanggil via score_products()."""
+    return _score_products_impl(jenis_kulit, set(permasalahan_tuple), kategori_frontend, limit)
+
+
 def score_products(
     jenis_kulit: str,
     permasalahan_labels: list[str],
@@ -499,11 +523,25 @@ def score_products(
 ) -> list[dict]:
     """
     Hitung skor WSM semua produk berdasarkan jenis kulit + permasalahan.
+    Menggunakan cache in-memory (lru_cache) untuk request dengan parameter sama.
+    """
+    permasalahan_tuple = tuple(sorted(permasalahan_labels))
+    return _score_products_cached(jenis_kulit, permasalahan_tuple, kategori_frontend, limit)
+
+
+def _score_products_impl(
+    jenis_kulit: str,
+    concern_labels_norm: set[str],
+    kategori_frontend: str | None,
+    limit: int,
+) -> list[dict]:
+    """
+    Implementasi utama scoring WSM. Dipanggil oleh _score_products_cached.
 
     Args:
-        jenis_kulit: "Normal" | "Berminyak" | "Kombinasi" | "Kering"
-        permasalahan_labels: list label dari SkinScan AI, e.g. ["Jerawat", "PIH"]
-        kategori_frontend: "cleanser" | "moisturizer" | "serum" | "sunscreen" | "toner" | None
+        jenis_kulit: \"Normal\" | \"Berminyak\" | \"Kombinasi\" | \"Kering\"
+        concern_labels_norm: set label masalah kulit yang sudah di-normalize
+        kategori_frontend: \"cleanser\" | \"moisturizer\" | \"serum\" | \"sunscreen\" | \"toner\" | None
         limit: jumlah maksimum produk yang dikembalikan
 
     Returns:
@@ -516,13 +554,13 @@ def score_products(
     skin_type_norm = jenis_kulit.strip().lower()
 
     # Map label SkinScan → label dataset, lalu lowercase
-    concern_labels_norm = set()
-    for label in permasalahan_labels:
+    mapped_concerns: set[str] = set()
+    for label in concern_labels_norm:
         mapped = PROBLEM_LABEL_MAP.get(label, label)
-        concern_labels_norm.add(mapped.strip().lower())
+        mapped_concerns.add(mapped.strip().lower())
 
     # ── Filter kategori ───────────────────────────────────────────────────
-    df = _df_produk.copy()
+    df = _df_produk
     if kategori_frontend:
         kat_dataset = CATEGORY_MAP.get(kategori_frontend)
         if kat_dataset:
@@ -531,23 +569,24 @@ def score_products(
     if df.empty:
         return []
 
-    # ── Score setiap produk ────────────────────────────────────────────────
+    # ── Score setiap produk (ingredient sudah di-cache saat startup) ─────────
     results = []
-    for _, row in df.iterrows():
-        ingr_raw = str(row.get('Ingridients', '') or '')
-        if not ingr_raw.strip():
-            continue
-
-        ingredients = _parse_ingredients(ingr_raw)
+    for idx, row in df.iterrows():
+        ingredients = _PRODUCT_INGREDIENTS_CACHE.get(idx)
         if not ingredients:
             continue
 
         wsm_result = _score_product_wsm(
-            ingredients, 
-            skin_type_norm, 
-            concern_labels_norm, 
+            ingredients,
+            skin_type_norm,
+            mapped_concerns,
             kategori_frontend=kategori_frontend
         )
+
+        # Hanya tampilkan produk yang direkomendasikan (score >= 0.50)
+        # Produk "Tidak Direkomendasikan" tidak ditampilkan ke user
+        if wsm_result['wsm_score'] < 0.50:
+            continue
 
         harga = row.get('Harga')
         try:
@@ -555,13 +594,10 @@ def score_products(
         except (TypeError, ValueError):
             harga = 0
 
-        # Match percentage: WSM score directly gives 0-1, 0.5 is 50%, 0.8 is 80%
-        # So we just multiply by 100
         match_pct = min(100, max(0, round(wsm_result['wsm_score'] * 100)))
 
         # Batasi jumlah analysis yang dikirim (hanya yang relevan + max 20)
         analysis_full = wsm_result['ingredients_analysis']
-        # Prioritaskan positif dan negatif, netral terakhir
         analysis_relevant = [a for a in analysis_full if a['status'] != 'netral']
         analysis_netral = [a for a in analysis_full if a['status'] == 'netral']
         analysis_to_send = analysis_relevant + analysis_netral[:max(0, 20 - len(analysis_relevant))]
@@ -593,4 +629,4 @@ def score_products(
 
     # ── Sort descending by WSM score ───────────────────────────────────────
     results.sort(key=lambda x: x['score'], reverse=True)
-    return results[:limit]
+    return results[:limit]
