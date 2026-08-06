@@ -74,15 +74,12 @@ def init_database():
                     cursor.execute(f"ALTER TABLE users DROP COLUMN {col}")
                     print(f"Dropped old column '{col}' from 'users' table to separate data.")
             
-            # Pastikan kolom sunscreen_interval & subscription_plan terdaftar
+            # Pastikan kolom sunscreen_interval terdaftar
             cursor.execute("SHOW COLUMNS FROM users")
             refreshed_cols = [col[0] for col in cursor.fetchall()]
             if 'sunscreen_interval' not in refreshed_cols:
                 cursor.execute("ALTER TABLE users ADD COLUMN sunscreen_interval INT DEFAULT 2")
                 print("Added column 'sunscreen_interval' to 'users' table.")
-            if 'subscription_plan' not in refreshed_cols:
-                cursor.execute("ALTER TABLE users ADD COLUMN subscription_plan VARCHAR(50) DEFAULT 'basic'")
-                print("Added column 'subscription_plan' to 'users' table.")
             
             # 2. Buat tabel user_favorites jika belum ada (Pemisahan data produk favorit)
             cursor.execute("""
