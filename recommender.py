@@ -273,41 +273,6 @@ def _load_knowledge():
     return len(df)
 
 
-def _load_products():
-    """Load Dataset Produk.xlsx dan pre-parse semua ingredient."""
-    global _df_produk, _PRODUCT_INGREDIENTS_CACHE
-    produk_path = os.path.join(_DATASET_DIR, 'Dataset Produk.xlsx')
-    _df_produk = pd.read_excel(produk_path)
-
-    # Pre-parse ingredient setiap produk saat startup (bukan saat request)
-    _PRODUCT_INGREDIENTS_CACHE.clear()
-    for idx, row in _df_produk.iterrows():
-        ingr_raw = str(row.get('Ingridients', '') or '')
-        if ingr_raw.strip():
-            _PRODUCT_INGREDIENTS_CACHE[idx] = _parse_ingredients(ingr_raw)
-
-    return len(_df_produk)
-
-
-print("[recommender] Loading datasets (WSM mode)...")
-_t0 = time.time()
-try:
-    _n_knowledge = _load_knowledge()
-    _n_produk = _load_products()
-    _elapsed = time.time() - _t0
-    print(f"[recommender] Loaded {_n_knowledge} knowledge rows -> "
-          f"{len(_SKIN_COCOK)} unique ingredients, "
-          f"{_n_produk} produk. ({_elapsed:.2f}s)")
-except Exception as e:
-    print(f"[recommender] ERROR loading datasets: {e}")
-    import traceback
-    traceback.print_exc()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# INGREDIENT PARSING
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def _parse_ingredients(ingr_text: str) -> list[dict]:
     """
     Parse string ingredien produk menjadi list dict dengan posisi & bucket.
@@ -340,6 +305,37 @@ def _parse_ingredients(ingr_text: str) -> list[dict]:
             'bucket': bucket,
         })
     return result
+
+
+def _load_products():
+    """Load Dataset Produk.xlsx dan pre-parse semua ingredient."""
+    global _df_produk, _PRODUCT_INGREDIENTS_CACHE
+    produk_path = os.path.join(_DATASET_DIR, 'Dataset Produk.xlsx')
+    _df_produk = pd.read_excel(produk_path)
+
+    # Pre-parse ingredient setiap produk saat startup (bukan saat request)
+    _PRODUCT_INGREDIENTS_CACHE.clear()
+    for idx, row in _df_produk.iterrows():
+        ingr_raw = str(row.get('Ingridients', '') or '')
+        if ingr_raw.strip():
+            _PRODUCT_INGREDIENTS_CACHE[idx] = _parse_ingredients(ingr_raw)
+
+    return len(_df_produk)
+
+
+print("[recommender] Loading datasets (WSM mode)...")
+_t0 = time.time()
+try:
+    _n_knowledge = _load_knowledge()
+    _n_produk = _load_products()
+    _elapsed = time.time() - _t0
+    print(f"[recommender] Loaded {_n_knowledge} knowledge rows -> "
+          f"{len(_SKIN_COCOK)} unique ingredients, "
+          f"{_n_produk} produk. ({_elapsed:.2f}s)")
+except Exception as e:
+    print(f"[recommender] ERROR loading datasets: {e}")
+    import traceback
+    traceback.print_exc()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -583,11 +579,6 @@ def _score_products_impl(
             kategori_frontend=kategori_frontend
         )
 
-        # Hanya tampilkan produk yang direkomendasikan (score >= 0.50)
-        # Produk "Tidak Direkomendasikan" tidak ditampilkan ke user
-        if wsm_result['wsm_score'] < 0.50:
-            continue
-
         harga = row.get('Harga')
         try:
             harga = int(harga)
@@ -629,4 +620,13 @@ def _score_products_impl(
 
     # ── Sort descending by WSM score ───────────────────────────────────────
     results.sort(key=lambda x: x['score'], reverse=True)
-    return results[:limit]
+
+    # ── Filter relatif: buang produk yang sangat tidak relevan ────────────
+    # Hanya tampilkan produk dengan skor >= 40% dari skor tertinggi.
+    # Ini memastikan selalu ada hasil, tapi produk yang jauh di bawah disaring.
+    if results:
+        top_score = results[0]['score']
+        min_score = top_score * 0.40
+        results = [r for r in results if r['score'] >= min_score]
+
+    return results[:limit]
