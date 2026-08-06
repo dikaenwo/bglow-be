@@ -22,7 +22,8 @@ from urllib.parse import unquote
 from recommender import score_products
 import io
 from PIL import Image
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # Muat .env jika ada (untuk development lokal)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
@@ -363,6 +364,7 @@ def login_user():
                 "pore_condition": db_user.get('pore_condition'),
                 "skin_score": db_user.get('skin_score', 0),
                 "sunscreen_interval": db_user.get('sunscreen_interval', 2),
+                "subscription_plan": db_user.get('subscription_plan', 'basic'),
                 "favorites": extra["favorites"],
                 "diary_entries": extra["diary_entries"],
                 "routine": extra["routine"],
@@ -565,6 +567,7 @@ def social_login():
                 "pore_condition": db_user.get('pore_condition'),
                 "skin_score": db_user.get('skin_score', 0),
                 "sunscreen_interval": db_user.get('sunscreen_interval', 2),
+                "subscription_plan": db_user.get('subscription_plan', 'basic'),
                 "favorites": extra["favorites"],
                 "diary_entries": extra["diary_entries"],
                 "routine": extra["routine"],
@@ -603,7 +606,7 @@ def get_user_profile(user_id):
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
-            SELECT id, name, email, profile_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval 
+            SELECT id, name, email, profile_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval, subscription_plan 
             FROM users WHERE id = %s
         """, (user_id,))
         user_data = cursor.fetchone()
@@ -675,7 +678,7 @@ def update_user_profile(user_id):
         allowed_core_fields = [
             'name', 'email', 'profile_photo', 'skin_type',
             'acne_level', 'oil_level', 'pore_condition', 'skin_score',
-            'sunscreen_interval'
+            'sunscreen_interval', 'subscription_plan'
         ]
         for field in allowed_core_fields:
             if field in data:
@@ -767,7 +770,7 @@ def update_user_profile(user_id):
         conn.commit()
 
         cursor.execute("""
-            SELECT id, name, email, profile_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval 
+            SELECT id, name, email, profile_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval, subscription_plan 
             FROM users WHERE id = %s
         """, (user_id,))
         updated_user = cursor.fetchone()
@@ -945,10 +948,12 @@ def scan_bpom():
 _GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 _GEMINI_MODEL = 'gemini-3.1-flash-lite'
 
+_gemini_client = None
 if _GEMINI_API_KEY:
-    genai.configure(api_key=_GEMINI_API_KEY)
+    _gemini_client = genai.Client(api_key=_GEMINI_API_KEY)
 else:
     print("[WARN] GEMINI_API_KEY tidak diset. Menggunakan mode mock untuk /api/skin-scan.")
+
 
 
 SKIN_ANALYSIS_PROMPT = """\
@@ -995,17 +1000,20 @@ Struktur JSON:
 
 def _call_gemini_vision(b64_image: str, mime_type: str) -> dict:
     """
-    Panggil Gemini via official SDK (google.generativeai) dengan PIL Image.
+    Panggil Gemini via official SDK (google.genai) dengan PIL Image.
     Kembalikan dict hasil parse JSON dari Gemini.
     """
     img_bytes = base64.b64decode(b64_image)
     pil_img = Image.open(io.BytesIO(img_bytes))
 
-    model = genai.GenerativeModel(
-        model_name=_GEMINI_MODEL,
-        generation_config={"temperature": 0.1, "top_p": 0.95}
+    response = _gemini_client.models.generate_content(
+        model=_GEMINI_MODEL,
+        contents=[SKIN_ANALYSIS_PROMPT, pil_img],
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            top_p=0.95
+        )
     )
-    response = model.generate_content([SKIN_ANALYSIS_PROMPT, pil_img])
 
     raw_text = response.text.strip()
     clean = raw_text.replace("```json", "").replace("```", "").strip()
