@@ -55,7 +55,7 @@ def get_session_with_csrf():
     xsrf_cookie = unquote(s.cookies.get("XSRF-TOKEN", ""))
     return s, csrf_token, xsrf_cookie
 
-
+#smsmsm
 def build_payload(query, csrf_token):
     return {
         "draw": "1",
