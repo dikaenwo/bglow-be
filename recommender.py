@@ -71,6 +71,8 @@ CATEGORY_MAP = {
     'serum':       'Serum',
     'sunscreen':   'Sunscreen',
     'toner':       'Eksfoliasi',
+    'exfoliator':  'Eksfoliasi',   # key yang dipakai Home widget
+    'exfoliant':   'Eksfoliasi',   # alias tambahan
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
