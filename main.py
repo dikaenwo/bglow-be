@@ -1055,7 +1055,7 @@ def _derive_pore_condition(permasalahan_list: list, jenis_kulit: str) -> str:
         return 'Sedang — Cukup Terlihat'
     return 'Baik — Minimal'
 
-
+#heh
 @app.route("/api/skin-scan", methods=["POST"])
 def skin_scan():
     """Analisis kulit menggunakan Gemini AI Vision (via REST API)."""
@@ -1221,4 +1221,4 @@ def get_recommendations():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", debug=True, port=5050)
+    app.run(host="0.0.0.0", debug=True, port=5050)

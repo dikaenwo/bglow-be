@@ -3,7 +3,7 @@ import mysql.connector
 from mysql.connector import Error
 from dotenv import load_dotenv
 
-# Muat .env jika ada (untuk development lokal)
+# Muat .env jika ada (untuk development lokal) heh
 load_dotenv()
 
 DB_CONFIG = {
