@@ -1221,4 +1221,6 @@ def get_recommendations():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", debug=True, port=5050)
+    # PRODUCTION: debug=False
+    # Untuk production, gunakan: gunicorn -w 4 -b 0.0.0.0:5050 main:app
+    app.run(host="0.0.0.0", debug=False, port=5050)

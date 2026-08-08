@@ -10,3 +10,4 @@ openpyxl
 werkzeug
 google-generativeai
 Pillow
+gunicorn

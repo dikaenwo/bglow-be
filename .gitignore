@@ -16,3 +16,9 @@ venv.bak/
 # IDEs
 .vscode/
 .idea/
+
+# Production runtime files
+*.pid
+bglow.pid
+bglow.log
+*.log
