@@ -1916,6 +1916,109 @@ def get_my_posts():
             conn.close()
 
 
+# ─── Single Post Detail ────────────────────────────────────────────────────────
+
+@app.route("/api/posts/<int:post_id>", methods=["GET"])
+@require_auth
+def get_single_post(post_id):
+    """Ambil satu post lengkap dengan info user dan like status."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT p.id, p.content, p.image_url, p.created_at,
+                   u.id AS user_id, u.name AS user_name,
+                   u.skin_type,
+                   COUNT(DISTINCT pl.id) AS like_count,
+                   COUNT(DISTINCT pc.id) AS comment_count,
+                   MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            LEFT JOIN post_likes pl ON pl.post_id = p.id
+            LEFT JOIN post_comments pc ON pc.post_id = p.id
+            LEFT JOIN post_likes pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
+            WHERE p.id = %s
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type
+        """, (g.current_user_id, g.current_user_id, post_id))
+        post = cursor.fetchone()
+        if not post:
+            return jsonify({"detail": "Post tidak ditemukan"}), 404
+        if isinstance(post.get('created_at'), datetime):
+            post['created_at'] = post['created_at'].isoformat()
+        post['liked_by_me'] = bool(post.get('liked_by_me'))
+        return jsonify(post)
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+# ─── Public User Profile ───────────────────────────────────────────────────────
+
+@app.route("/api/users/<int:user_id>/profile", methods=["GET"])
+@require_auth
+def get_user_profile(user_id):
+    """Ambil profil publik user: info dasar + skin type + post mereka."""
+    page  = max(1, int(request.args.get('page', 1)))
+    limit = min(30, int(request.args.get('limit', 20)))
+    offset = (page - 1) * limit
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # User info
+        cursor.execute("""
+            SELECT id, name, skin_type, acne_level, oil_level, pore_condition
+            FROM users WHERE id = %s
+        """, (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"detail": "User tidak ditemukan"}), 404
+
+        # Post count
+        cursor.execute("SELECT COUNT(*) AS total FROM posts WHERE user_id = %s", (user_id,))
+        post_count = cursor.fetchone()['total']
+
+        # Posts
+        cursor.execute("""
+            SELECT p.id, p.content, p.image_url, p.created_at,
+                   COUNT(DISTINCT pl.id) AS like_count,
+                   COUNT(DISTINCT pc.id) AS comment_count,
+                   MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
+            FROM posts p
+            LEFT JOIN post_likes pl ON pl.post_id = p.id
+            LEFT JOIN post_comments pc ON pc.post_id = p.id
+            LEFT JOIN post_likes pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
+            WHERE p.user_id = %s
+            GROUP BY p.id, p.content, p.image_url, p.created_at
+            ORDER BY p.created_at DESC
+            LIMIT %s OFFSET %s
+        """, (g.current_user_id, g.current_user_id, user_id, limit, offset))
+        posts = cursor.fetchall()
+        for p in posts:
+            if isinstance(p.get('created_at'), datetime):
+                p['created_at'] = p['created_at'].isoformat()
+            p['liked_by_me'] = bool(p.get('liked_by_me'))
+            p['user_name'] = user['name']
+            p['user_id'] = user_id
+            p['skin_type'] = user['skin_type']
+
+        return jsonify({
+            "user": user,
+            "post_count": post_count,
+            "posts": posts,
+            "has_more": offset + limit < post_count
+        })
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
 if __name__ == "__main__":
     # PRODUCTION: debug=False
     # Untuk production, gunakan: gunicorn -w 4 -b 0.0.0.0:5050 main:app
