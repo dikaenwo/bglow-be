@@ -1958,13 +1958,15 @@ def get_my_posts():
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             SELECT p.id, p.content, p.image_url, p.created_at,
+                   u.name AS user_name, u.profile_photo,
                    COUNT(DISTINCT pl.id) AS like_count,
                    COUNT(DISTINCT pc.id) AS comment_count
             FROM posts p
+            JOIN users u ON u.id = p.user_id
             LEFT JOIN post_likes pl ON pl.post_id = p.id
             LEFT JOIN post_comments pc ON pc.post_id = p.id
             WHERE p.user_id = %s
-            GROUP BY p.id, p.content, p.image_url, p.created_at
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.name, u.profile_photo
             ORDER BY p.created_at DESC
             LIMIT %s OFFSET %s
         """, (g.current_user_id, limit, offset))
@@ -1997,7 +1999,7 @@ def get_my_liked_posts():
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             SELECT p.id, p.content, p.image_url, p.created_at,
-                   u.name AS user_name, u.skin_type,
+                   u.name AS user_name, u.skin_type, u.profile_photo,
                    COUNT(DISTINCT pl2.id) AS like_count,
                    COUNT(DISTINCT pc.id) AS comment_count
             FROM post_likes pl
@@ -2006,7 +2008,7 @@ def get_my_liked_posts():
             LEFT JOIN post_likes pl2 ON pl2.post_id = p.id
             LEFT JOIN post_comments pc ON pc.post_id = p.id
             WHERE pl.user_id = %s
-            GROUP BY p.id, p.content, p.image_url, p.created_at, u.name, u.skin_type
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.name, u.skin_type, u.profile_photo
             ORDER BY pl.created_at DESC
             LIMIT %s OFFSET %s
         """, (g.current_user_id, limit, offset))
