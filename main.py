@@ -1528,6 +1528,7 @@ def get_feed():
                 u.id AS user_id,
                 u.name AS user_name,
                 u.skin_type,
+                u.profile_photo,
                 COUNT(DISTINCT pl.id)  AS like_count,
                 COUNT(DISTINCT pc.id)  AS comment_count,
                 MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
@@ -1536,7 +1537,7 @@ def get_feed():
             LEFT JOIN post_likes    pl  ON pl.post_id  = p.id
             LEFT JOIN post_comments pc  ON pc.post_id  = p.id
             LEFT JOIN post_likes    pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
-            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type, u.profile_photo
             ORDER BY p.created_at DESC
             LIMIT %s OFFSET %s
         """, (g.current_user_id, g.current_user_id, limit, offset))
@@ -2079,7 +2080,7 @@ def get_following_feed():
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
             SELECT p.id, p.content, p.image_url, p.created_at,
-                   u.id AS user_id, u.name AS user_name, u.skin_type,
+                   u.id AS user_id, u.name AS user_name, u.skin_type, u.profile_photo,
                    COUNT(DISTINCT pl.id)  AS like_count,
                    COUNT(DISTINCT pc.id)  AS comment_count,
                    MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
@@ -2089,7 +2090,7 @@ def get_following_feed():
             LEFT JOIN post_likes    pl  ON pl.post_id  = p.id
             LEFT JOIN post_comments pc  ON pc.post_id  = p.id
             LEFT JOIN post_likes    pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
-            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type, u.profile_photo
             ORDER BY p.created_at DESC
             LIMIT %s OFFSET %s
         """, (g.current_user_id, g.current_user_id, g.current_user_id, limit, offset))
