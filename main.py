@@ -1959,7 +1959,7 @@ def get_single_post(post_id):
 
 @app.route("/api/users/<int:user_id>/profile", methods=["GET"])
 @require_auth
-def get_user_profile(user_id):
+def get_public_user_profile(user_id):
     """Ambil profil publik user: info dasar + skin type + post mereka."""
     page  = max(1, int(request.args.get('page', 1)))
     limit = min(30, int(request.args.get('limit', 20)))
