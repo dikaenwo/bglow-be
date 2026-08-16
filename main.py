@@ -1412,6 +1412,52 @@ def midtrans_webhook():
             conn.close()
 
 
+@app.route("/api/payment/transaction-status/<order_id>", methods=["GET"])
+@require_auth
+def get_transaction_status(order_id):
+    """
+    Cek status transaksi Midtrans berdasarkan order_id.
+    Di-poll oleh frontend setiap 3 detik untuk auto-detect pembayaran
+    tanpa user perlu klik 'Check status' di popup Snap.
+    """
+    if not MIDTRANS_SERVER_KEY:
+        return jsonify({"detail": "Payment gateway not configured"}), 503
+
+    # Pastikan order_id milik user yang sedang login
+    # Format: BGLOW-{user_id}-{timestamp}
+    try:
+        parts = order_id.split('-')
+        owner_id = int(parts[1])
+        if owner_id != g.current_user_id:
+            return jsonify({"detail": "Akses tidak diizinkan"}), 403
+    except (IndexError, ValueError):
+        return jsonify({"detail": "Format order_id tidak valid"}), 400
+
+    try:
+        auth_string = base64.b64encode(f"{MIDTRANS_SERVER_KEY}:".encode()).decode()
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Basic {auth_string}"
+        }
+
+        # Midtrans Status API endpoint
+        api_base = "https://api.midtrans.com" if MIDTRANS_IS_PRODUCTION else "https://api.sandbox.midtrans.com"
+        response = req.get(
+            f"{api_base}/v2/{order_id}/status",
+            headers=headers,
+            timeout=10
+        )
+        result = response.json()
+        print(f"[Midtrans Status] order={order_id} status={result.get('transaction_status')} fraud={result.get('fraud_status')}")
+        return jsonify(result), 200
+
+    except req.exceptions.Timeout:
+        return jsonify({"detail": "Timeout saat cek status"}), 504
+    except Exception as e:
+        print(f"[Midtrans Status] Error: {e}")
+        return jsonify({"detail": str(e)}), 500
+
+
 if __name__ == "__main__":
     # PRODUCTION: debug=False
     # Untuk production, gunakan: gunicorn -w 4 -b 0.0.0.0:5050 main:app
