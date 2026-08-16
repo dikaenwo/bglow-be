@@ -1797,27 +1797,63 @@ def add_product_review(product_name):
 @app.route("/api/posts/<int:post_id>/comments", methods=["GET"])
 @require_auth
 def get_comments(post_id):
-    """Ambil semua komentar untuk satu post."""
+    """Ambil semua komentar dengan replies & like count."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
+        # Tambah kolom parent_id & table comment_likes jika belum ada
         cursor.execute("""
-            SELECT c.id, c.content, c.created_at,
-                   u.id AS user_id, u.name AS user_name
+            ALTER TABLE post_comments
+            ADD COLUMN IF NOT EXISTS parent_id INT NULL
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS comment_likes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                comment_id INT NOT NULL,
+                user_id INT NOT NULL,
+                created_at DATETIME DEFAULT NOW(),
+                UNIQUE KEY uq_comment_like (comment_id, user_id),
+                FOREIGN KEY (comment_id) REFERENCES post_comments(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+
+        cursor.execute("""
+            SELECT c.id, c.content, c.created_at, c.parent_id,
+                   u.id AS user_id, u.name AS user_name,
+                   COUNT(DISTINCT cl.id) AS like_count,
+                   MAX(CASE WHEN cl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
             FROM post_comments c
             JOIN users u ON u.id = c.user_id
+            LEFT JOIN comment_likes cl  ON cl.comment_id  = c.id
+            LEFT JOIN comment_likes cl2 ON cl2.comment_id = c.id AND cl2.user_id = %s
             WHERE c.post_id = %s
+            GROUP BY c.id, c.content, c.created_at, c.parent_id, u.id, u.name
             ORDER BY c.created_at ASC
-            LIMIT 100
-        """, (post_id,))
-        comments = cursor.fetchall()
-        for c in comments:
+            LIMIT 200
+        """, (g.current_user_id, g.current_user_id, post_id))
+        rows = cursor.fetchall()
+
+        # Build nested structure: top-level + replies
+        top = []
+        by_id = {}
+        for c in rows:
             if isinstance(c.get('created_at'), datetime):
                 c['created_at'] = c['created_at'].isoformat()
-        # Ambil total count
+            c['liked_by_me'] = bool(c.get('liked_by_me'))
+            c['replies'] = []
+            by_id[c['id']] = c
+
+        for c in rows:
+            if c.get('parent_id') and c['parent_id'] in by_id:
+                by_id[c['parent_id']]['replies'].append(c)
+            else:
+                top.append(c)
+
         cursor.execute("SELECT COUNT(*) AS cnt FROM post_comments WHERE post_id = %s", (post_id,))
         total = cursor.fetchone()['cnt']
-        return jsonify({"comments": comments, "total": total})
+        return jsonify({"comments": top, "total": total})
     except Exception as e:
         return jsonify({"detail": str(e)}), 500
     finally:
@@ -1829,9 +1865,10 @@ def get_comments(post_id):
 @app.route("/api/posts/<int:post_id>/comments", methods=["POST"])
 @require_auth
 def add_comment(post_id):
-    """Tambah komentar ke sebuah post."""
+    """Tambah komentar (atau reply) ke sebuah post."""
     data = request.get_json(silent=True) or {}
-    content = (data.get('content') or '').strip()
+    content   = (data.get('content') or '').strip()
+    parent_id = data.get('parent_id')  # optional: reply to comment
     if not content:
         return jsonify({"detail": "Komentar tidak boleh kosong"}), 400
     if len(content) > 500:
@@ -1840,33 +1877,79 @@ def add_comment(post_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        # Pastikan post ada
         cursor.execute("SELECT id FROM posts WHERE id = %s", (post_id,))
         if not cursor.fetchone():
             return jsonify({"detail": "Post tidak ditemukan"}), 404
 
+        # Validate parent_id
+        if parent_id:
+            cursor.execute("SELECT id FROM post_comments WHERE id = %s AND post_id = %s", (parent_id, post_id))
+            if not cursor.fetchone():
+                parent_id = None
+
         cursor.execute(
-            "INSERT INTO post_comments (post_id, user_id, content) VALUES (%s, %s, %s)",
-            (post_id, g.current_user_id, content)
+            "INSERT INTO post_comments (post_id, user_id, content, parent_id) VALUES (%s, %s, %s, %s)",
+            (post_id, g.current_user_id, content, parent_id)
         )
         conn.commit()
         comment_id = cursor.lastrowid
 
         cursor.execute("""
-            SELECT c.id, c.content, c.created_at,
-                   u.id AS user_id, u.name AS user_name
+            SELECT c.id, c.content, c.created_at, c.parent_id,
+                   u.id AS user_id, u.name AS user_name,
+                   0 AS like_count, 0 AS liked_by_me
             FROM post_comments c JOIN users u ON u.id = c.user_id
             WHERE c.id = %s
         """, (comment_id,))
         comment = cursor.fetchone()
         if comment and isinstance(comment.get('created_at'), datetime):
             comment['created_at'] = comment['created_at'].isoformat()
+        comment['replies'] = []
+        comment['liked_by_me'] = False
 
-        # Update comment count di response
         cursor.execute("SELECT COUNT(*) AS cnt FROM post_comments WHERE post_id = %s", (post_id,))
         comment['post_comment_count'] = cursor.fetchone()['cnt']
 
         return jsonify(comment), 201
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+# ─── Comment Like Toggle ───────────────────────────────────────────────────────
+
+@app.route("/api/comments/<int:comment_id>/like", methods=["POST"])
+@require_auth
+def toggle_comment_like(comment_id):
+    """Toggle like pada komentar."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id FROM post_comments WHERE id = %s", (comment_id,))
+        if not cursor.fetchone():
+            return jsonify({"detail": "Komentar tidak ditemukan"}), 404
+
+        cursor.execute(
+            "SELECT id FROM comment_likes WHERE comment_id = %s AND user_id = %s",
+            (comment_id, g.current_user_id)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute("DELETE FROM comment_likes WHERE comment_id = %s AND user_id = %s",
+                           (comment_id, g.current_user_id))
+            liked = False
+        else:
+            cursor.execute("INSERT INTO comment_likes (comment_id, user_id) VALUES (%s, %s)",
+                           (comment_id, g.current_user_id))
+            liked = True
+        conn.commit()
+
+        cursor.execute("SELECT COUNT(*) AS cnt FROM comment_likes WHERE comment_id = %s", (comment_id,))
+        like_count = cursor.fetchone()['cnt']
+        return jsonify({"liked": liked, "like_count": like_count})
     except Exception as e:
         return jsonify({"detail": str(e)}), 500
     finally:
