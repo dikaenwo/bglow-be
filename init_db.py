@@ -197,6 +197,67 @@ def init_database():
             print("Table 'product_reviews' checked/created.")
             
             conn.commit()
+
+            # ── Feed / Community tables ──────────────────────────────────────
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS posts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                content TEXT,
+                image_url VARCHAR(500),
+                created_at DATETIME DEFAULT NOW(),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+            """)
+            print("Table 'posts' checked/created.")
+
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS post_likes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                post_id INT NOT NULL,
+                user_id INT NOT NULL,
+                created_at DATETIME DEFAULT NOW(),
+                UNIQUE KEY uq_post_like (post_id, user_id),
+                FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+            """)
+            print("Table 'post_likes' checked/created.")
+
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS post_comments (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                post_id INT NOT NULL,
+                user_id INT NOT NULL,
+                content TEXT NOT NULL,
+                parent_id INT NULL,
+                created_at DATETIME DEFAULT NOW(),
+                FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+            """)
+            print("Table 'post_comments' checked/created.")
+
+            # Add parent_id if table existed without it
+            cursor.execute("SHOW COLUMNS FROM post_comments LIKE 'parent_id'")
+            if not cursor.fetchone():
+                cursor.execute("ALTER TABLE post_comments ADD COLUMN parent_id INT NULL")
+                print("Added column 'parent_id' to 'post_comments'.")
+
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS comment_likes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                comment_id INT NOT NULL,
+                user_id INT NOT NULL,
+                created_at DATETIME DEFAULT NOW(),
+                UNIQUE KEY uq_comment_like (comment_id, user_id),
+                FOREIGN KEY (comment_id) REFERENCES post_comments(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+            """)
+            print("Table 'comment_likes' checked/created.")
+
+            conn.commit()
             cursor.close()
             conn.close()
             print("Database initialization and separation successful!")
