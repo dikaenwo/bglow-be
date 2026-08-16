@@ -1528,12 +1528,14 @@ def get_feed():
                 u.id AS user_id,
                 u.name AS user_name,
                 u.skin_type,
-                COUNT(DISTINCT pl.id) AS like_count,
+                COUNT(DISTINCT pl.id)  AS like_count,
+                COUNT(DISTINCT pc.id)  AS comment_count,
                 MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
             FROM posts p
             JOIN users u ON u.id = p.user_id
-            LEFT JOIN post_likes pl  ON pl.post_id = p.id
-            LEFT JOIN post_likes pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
+            LEFT JOIN post_likes    pl  ON pl.post_id  = p.id
+            LEFT JOIN post_comments pc  ON pc.post_id  = p.id
+            LEFT JOIN post_likes    pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
             GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type
             ORDER BY p.created_at DESC
             LIMIT %s OFFSET %s
