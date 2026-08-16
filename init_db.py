@@ -260,6 +260,20 @@ def init_database():
             """)
             print("Table 'comment_likes' checked/created.")
 
+            # follows table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS follows (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                follower_id INT NOT NULL,
+                following_id INT NOT NULL,
+                created_at DATETIME DEFAULT NOW(),
+                UNIQUE KEY uq_follow (follower_id, following_id),
+                FOREIGN KEY (follower_id)  REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (following_id) REFERENCES users(id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+            """)
+            print("Table 'follows' checked/created.")
+
             conn.commit()
             cursor.close()
             conn.close()

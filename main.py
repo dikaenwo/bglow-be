@@ -1982,6 +1982,93 @@ def get_my_posts():
             conn.close()
 
 
+# ─── Follow System ─────────────────────────────────────────────────────────────
+
+@app.route("/api/users/<int:user_id>/follow", methods=["POST"])
+@require_auth
+def toggle_follow(user_id):
+    """Toggle follow/unfollow seorang user."""
+    if user_id == g.current_user_id:
+        return jsonify({"detail": "Tidak bisa follow diri sendiri"}), 400
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id FROM users WHERE id = %s", (user_id,))
+        if not cursor.fetchone():
+            return jsonify({"detail": "User tidak ditemukan"}), 404
+
+        cursor.execute(
+            "SELECT id FROM follows WHERE follower_id = %s AND following_id = %s",
+            (g.current_user_id, user_id)
+        )
+        existing = cursor.fetchone()
+        if existing:
+            cursor.execute("DELETE FROM follows WHERE follower_id = %s AND following_id = %s",
+                           (g.current_user_id, user_id))
+            following = False
+        else:
+            cursor.execute("INSERT INTO follows (follower_id, following_id) VALUES (%s, %s)",
+                           (g.current_user_id, user_id))
+            following = True
+        conn.commit()
+
+        cursor.execute("SELECT COUNT(*) AS cnt FROM follows WHERE following_id = %s", (user_id,))
+        follower_count = cursor.fetchone()['cnt']
+        return jsonify({"following": following, "follower_count": follower_count})
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+@app.route("/api/feed/following", methods=["GET"])
+@require_auth
+def get_following_feed():
+    """Feed dari user yang di-follow."""
+    page  = max(1, int(request.args.get('page', 1)))
+    limit = min(20, int(request.args.get('limit', 10)))
+    offset = (page - 1) * limit
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT p.id, p.content, p.image_url, p.created_at,
+                   u.id AS user_id, u.name AS user_name, u.skin_type,
+                   COUNT(DISTINCT pl.id)  AS like_count,
+                   COUNT(DISTINCT pc.id)  AS comment_count,
+                   MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            JOIN follows f ON f.following_id = p.user_id AND f.follower_id = %s
+            LEFT JOIN post_likes    pl  ON pl.post_id  = p.id
+            LEFT JOIN post_comments pc  ON pc.post_id  = p.id
+            LEFT JOIN post_likes    pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type
+            ORDER BY p.created_at DESC
+            LIMIT %s OFFSET %s
+        """, (g.current_user_id, g.current_user_id, g.current_user_id, limit, offset))
+        posts = cursor.fetchall()
+        for p in posts:
+            if isinstance(p.get('created_at'), datetime):
+                p['created_at'] = p['created_at'].isoformat()
+            p['liked_by_me'] = bool(p.get('liked_by_me'))
+
+        cursor.execute("""
+            SELECT COUNT(*) AS total FROM posts p
+            JOIN follows f ON f.following_id = p.user_id AND f.follower_id = %s
+        """, (g.current_user_id,))
+        total = cursor.fetchone()['total']
+        return jsonify({"posts": posts, "has_more": offset + limit < total, "total": total})
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
 # ─── Single Post Detail ────────────────────────────────────────────────────────
 
 @app.route("/api/posts/<int:post_id>", methods=["GET"])
@@ -2026,7 +2113,7 @@ def get_single_post(post_id):
 @app.route("/api/users/<int:user_id>/profile", methods=["GET"])
 @require_auth
 def get_public_user_profile(user_id):
-    """Ambil profil publik user: info dasar + skin type + post mereka."""
+    """Ambil profil publik user: info + follow stats + posts."""
     page  = max(1, int(request.args.get('page', 1)))
     limit = min(30, int(request.args.get('limit', 20)))
     offset = (page - 1) * limit
@@ -2034,7 +2121,6 @@ def get_public_user_profile(user_id):
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
-        # User info
         cursor.execute("""
             SELECT id, name, skin_type, acne_level, oil_level, pore_condition
             FROM users WHERE id = %s
@@ -2043,11 +2129,20 @@ def get_public_user_profile(user_id):
         if not user:
             return jsonify({"detail": "User tidak ditemukan"}), 404
 
-        # Post count
+        # Follow counts
+        cursor.execute("SELECT COUNT(*) AS cnt FROM follows WHERE following_id = %s", (user_id,))
+        follower_count = cursor.fetchone()['cnt']
+        cursor.execute("SELECT COUNT(*) AS cnt FROM follows WHERE follower_id = %s", (user_id,))
+        following_count = cursor.fetchone()['cnt']
+        cursor.execute(
+            "SELECT id FROM follows WHERE follower_id = %s AND following_id = %s",
+            (g.current_user_id, user_id)
+        )
+        is_following = bool(cursor.fetchone())
+
         cursor.execute("SELECT COUNT(*) AS total FROM posts WHERE user_id = %s", (user_id,))
         post_count = cursor.fetchone()['total']
 
-        # Posts
         cursor.execute("""
             SELECT p.id, p.content, p.image_url, p.created_at,
                    COUNT(DISTINCT pl.id) AS like_count,
@@ -2074,6 +2169,10 @@ def get_public_user_profile(user_id):
         return jsonify({
             "user": user,
             "post_count": post_count,
+            "follower_count": follower_count,
+            "following_count": following_count,
+            "is_following": is_following,
+            "is_own_profile": (user_id == g.current_user_id),
             "posts": posts,
             "has_more": offset + limit < post_count
         })
