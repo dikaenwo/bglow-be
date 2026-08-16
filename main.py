@@ -1801,23 +1801,6 @@ def get_comments(post_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
-        # Tambah kolom parent_id & table comment_likes jika belum ada
-        cursor.execute("""
-            ALTER TABLE post_comments
-            ADD COLUMN IF NOT EXISTS parent_id INT NULL
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS comment_likes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                comment_id INT NOT NULL,
-                user_id INT NOT NULL,
-                created_at DATETIME DEFAULT NOW(),
-                UNIQUE KEY uq_comment_like (comment_id, user_id),
-                FOREIGN KEY (comment_id) REFERENCES post_comments(id) ON DELETE CASCADE,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            )
-        """)
-        conn.commit()
 
         cursor.execute("""
             SELECT c.id, c.content, c.created_at, c.parent_id,

@@ -238,11 +238,14 @@ def init_database():
             """)
             print("Table 'post_comments' checked/created.")
 
-            # Add parent_id if table existed without it
-            cursor.execute("SHOW COLUMNS FROM post_comments LIKE 'parent_id'")
-            if not cursor.fetchone():
-                cursor.execute("ALTER TABLE post_comments ADD COLUMN parent_id INT NULL")
-                print("Added column 'parent_id' to 'post_comments'.")
+            # Add parent_id if table existed without it (MySQL 5.x safe)
+            try:
+                cursor.execute("SHOW COLUMNS FROM post_comments LIKE 'parent_id'")
+                if not cursor.fetchone():
+                    cursor.execute("ALTER TABLE post_comments ADD COLUMN parent_id INT NULL")
+                    print("Added column 'parent_id' to 'post_comments'.")
+            except Exception as col_err:
+                print(f"Warning checking parent_id: {col_err}")
 
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS comment_likes (
