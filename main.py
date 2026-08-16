@@ -686,7 +686,7 @@ def update_user_profile(user_id):
         allowed_core_fields = [
             'name', 'email', 'profile_photo', 'skin_type',
             'acne_level', 'oil_level', 'pore_condition', 'skin_score',
-            'sunscreen_interval'
+            'sunscreen_interval', 'skin_problems'
         ]
         for field in allowed_core_fields:
             if field in data:
@@ -2124,7 +2124,7 @@ def get_public_user_profile(user_id):
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute("""
-            SELECT id, name, skin_type, acne_level, oil_level, pore_condition
+            SELECT id, name, skin_type, acne_level, oil_level, pore_condition, skin_problems
             FROM users WHERE id = %s
         """, (user_id,))
         user = cursor.fetchone()

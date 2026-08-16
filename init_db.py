@@ -80,6 +80,9 @@ def init_database():
             if 'sunscreen_interval' not in refreshed_cols:
                 cursor.execute("ALTER TABLE users ADD COLUMN sunscreen_interval INT DEFAULT 2")
                 print("Added column 'sunscreen_interval' to 'users' table.")
+            if 'skin_problems' not in refreshed_cols:
+                cursor.execute("ALTER TABLE users ADD COLUMN skin_problems TEXT")
+                print("Added column 'skin_problems' to 'users' table.")
             
             # 2. Buat tabel user_favorites jika belum ada (Pemisahan data produk favorit)
             cursor.execute("""
