@@ -31,6 +31,17 @@ if os.path.exists(_env_path):
 else:
     load_dotenv()
 
+# ─── Midtrans Config ────────────────────────────────────────────────────────
+MIDTRANS_SERVER_KEY   = os.environ.get('MIDTRANS_SERVER_KEY', '')
+MIDTRANS_CLIENT_KEY   = os.environ.get('MIDTRANS_CLIENT_KEY', '')
+MIDTRANS_MERCHANT_ID  = os.environ.get('MIDTRANS_MERCHANT_ID', '')
+MIDTRANS_IS_PRODUCTION = os.environ.get('MIDTRANS_IS_PRODUCTION', 'False').lower() == 'true'
+MIDTRANS_BASE_URL = 'https://app.midtrans.com' if MIDTRANS_IS_PRODUCTION else 'https://app.sandbox.midtrans.com'
+MIDTRANS_SNAP_URL = f'{MIDTRANS_BASE_URL}/snap/v1/transactions'
+
+if not MIDTRANS_SERVER_KEY:
+    print("[WARN] MIDTRANS_SERVER_KEY belum dikonfigurasi di .env")
+
 # Auto-initialize database tables if missing
 try:
     from init_db import init_database
@@ -1218,6 +1229,187 @@ def get_recommendations():
 
 
 
+# ─── Midtrans Payment Endpoints ─────────────────────────────────────────────
+
+@app.route("/api/payment/config", methods=["GET"])
+def get_payment_config():
+    """Endpoint publik untuk mengambil Client Key Midtrans (aman untuk frontend)."""
+    return jsonify({
+        "client_key": MIDTRANS_CLIENT_KEY,
+        "is_production": MIDTRANS_IS_PRODUCTION,
+        "snap_url": 'https://app.midtrans.com/snap/snap.js' if MIDTRANS_IS_PRODUCTION else 'https://app.sandbox.midtrans.com/snap/snap.js'
+    }), 200
+
+
+@app.route("/api/payment/create-transaction", methods=["POST"])
+@require_auth
+def create_midtrans_transaction():
+    """
+    Buat transaksi Midtrans Snap untuk langganan Glow Plus.
+    Mengembalikan snap_token yang dipakai frontend untuk membuka popup pembayaran.
+    """
+    user_id = g.current_user_id
+    data = request.get_json() or {}
+
+    if not MIDTRANS_SERVER_KEY:
+        return jsonify({"detail": "Payment gateway belum dikonfigurasi"}), 503
+
+    # Ambil data user dari database
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"detail": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT id, name, email FROM users WHERE id = %s", (user_id,))
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({"detail": "User tidak ditemukan"}), 404
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+    # Buat order_id unik
+    import time
+    order_id = f"BGLOW-{user_id}-{int(time.time())}"
+    gross_amount = 30000  # Rp 30.000
+
+    payload = {
+        "transaction_details": {
+            "order_id": order_id,
+            "gross_amount": gross_amount
+        },
+        "item_details": [{
+            "id": "glow_plus_monthly",
+            "price": gross_amount,
+            "quantity": 1,
+            "name": "B-Glow Glow Plus - 1 Bulan",
+            "category": "Subscription"
+        }],
+        "customer_details": {
+            "first_name": user['name'],
+            "email": user['email']
+        },
+        "callbacks": {
+            "finish": "https://bglow.store/#/subscription"
+        }
+    }
+
+    try:
+        # Encode Server Key ke Base64 untuk Basic Auth
+        auth_string = base64.b64encode(f"{MIDTRANS_SERVER_KEY}:".encode()).decode()
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Authorization": f"Basic {auth_string}"
+        }
+
+        response = req.post(
+            MIDTRANS_SNAP_URL,
+            json=payload,
+            headers=headers,
+            timeout=15
+        )
+        result = response.json()
+
+        if response.status_code in (200, 201) and 'token' in result:
+            print(f"[Midtrans] Snap token dibuat untuk user {user_id}, order: {order_id}")
+            return jsonify({
+                "snap_token": result['token'],
+                "redirect_url": result.get('redirect_url', ''),
+                "order_id": order_id
+            }), 200
+        else:
+            print(f"[Midtrans] Error: {result}")
+            return jsonify({"detail": result.get('error_messages', ['Gagal membuat transaksi'])[0]}), 400
+
+    except req.exceptions.Timeout:
+        return jsonify({"detail": "Timeout koneksi ke Midtrans. Coba lagi."}), 504
+    except Exception as e:
+        print(f"[Midtrans] Exception: {e}")
+        return jsonify({"detail": str(e)}), 500
+
+
+@app.route("/api/payment/webhook", methods=["POST"])
+def midtrans_webhook():
+    """
+    Webhook Midtrans — dipanggil otomatis oleh server Midtrans setelah pembayaran.
+    Verifikasi signature, lalu update status subscription user di database.
+    """
+    import hashlib
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"detail": "No data"}), 400
+
+    # ── Verifikasi Signature Key ────────────────────────────────────────────
+    order_id       = data.get('order_id', '')
+    status_code    = data.get('status_code', '')
+    gross_amount   = data.get('gross_amount', '')
+    signature_key  = data.get('signature_key', '')
+
+    raw_string = f"{order_id}{status_code}{gross_amount}{MIDTRANS_SERVER_KEY}"
+    expected_sig = hashlib.sha512(raw_string.encode()).hexdigest()
+
+    if signature_key != expected_sig:
+        print(f"[Midtrans Webhook] ❌ Signature mismatch untuk order {order_id}")
+        return jsonify({"detail": "Invalid signature"}), 403
+
+    # ── Parse status transaksi ─────────────────────────────────────────────
+    transaction_status = data.get('transaction_status', '')
+    fraud_status       = data.get('fraud_status', '')
+    payment_type       = data.get('payment_type', '')
+
+    print(f"[Midtrans Webhook] Order: {order_id} | Status: {transaction_status} | Fraud: {fraud_status}")
+
+    # Kondisi pembayaran dianggap berhasil:
+    is_success = (
+        transaction_status == 'capture' and fraud_status == 'accept'
+    ) or (
+        transaction_status == 'settlement'
+    )
+
+    if not is_success:
+        # Bukan pembayaran berhasil (pending, deny, cancel, expire, etc.)
+        print(f"[Midtrans Webhook] Transaksi tidak berhasil: {transaction_status}")
+        return jsonify({"message": "OK - not a success event"}), 200
+
+    # ── Extract user_id dari order_id ──────────────────────────────────────
+    # Format order_id: BGLOW-{user_id}-{timestamp}
+    try:
+        parts = order_id.split('-')
+        user_id = int(parts[1])
+    except (IndexError, ValueError):
+        print(f"[Midtrans Webhook] Gagal parse user_id dari order_id: {order_id}")
+        return jsonify({"detail": "Invalid order_id format"}), 400
+
+    # ── Update subscription di database ───────────────────────────────────
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"detail": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+        # Simpan status subscription ke kolom users atau tabel terpisah
+        # Saat ini kita update field plan di users table
+        cursor.execute(
+            "UPDATE users SET subscription_plan = %s, subscription_updated_at = NOW() WHERE id = %s",
+            ('glow-plus', user_id)
+        )
+        conn.commit()
+        print(f"[Midtrans Webhook] ✅ User {user_id} berhasil diupgrade ke Glow Plus!")
+        return jsonify({"message": "Subscription updated successfully"}), 200
+    except Exception as e:
+        print(f"[Midtrans Webhook] DB Error: {e}")
+        # Jika kolom belum ada, kembalikan 200 supaya Midtrans tidak retry terus
+        return jsonify({"message": "OK - db update skipped", "detail": str(e)}), 200
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
 
 
 if __name__ == "__main__":
