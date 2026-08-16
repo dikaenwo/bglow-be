@@ -819,7 +819,7 @@ def get_bpom_history(user_id):
 
         for row in rows:
             if row.get('created_at'):
-                row['created_at'] = row['created_at'].isoformat()
+                row['created_at'] = row['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
 
         return jsonify(rows), 200
     except Exception as e:
@@ -1545,7 +1545,7 @@ def get_feed():
         # Serialisasi datetime
         for post in posts:
             if isinstance(post.get('created_at'), datetime):
-                post['created_at'] = post['created_at'].isoformat()
+                post['created_at'] = post['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
             post['liked_by_me'] = bool(post.get('liked_by_me'))
 
         # Total count untuk pagination
@@ -1600,7 +1600,7 @@ def create_post():
         """, (post_id,))
         post = cursor.fetchone()
         if post and isinstance(post.get('created_at'), datetime):
-            post['created_at'] = post['created_at'].isoformat()
+            post['created_at'] = post['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
         post['like_count']   = 0
         post['liked_by_me']  = False
 
@@ -1716,7 +1716,7 @@ def get_product_reviews(product_name):
         reviews = cursor.fetchall()
         for r in reviews:
             if isinstance(r.get('created_at'), datetime):
-                r['created_at'] = r['created_at'].isoformat()
+                r['created_at'] = r['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
 
         # Hitung rata-rata rating
         avg_rating = round(sum(r['rating'] for r in reviews) / len(reviews), 1) if reviews else 0
@@ -1783,7 +1783,7 @@ def add_product_review(product_name):
         """, (review_id,))
         review = cursor.fetchone()
         if review and isinstance(review.get('created_at'), datetime):
-            review['created_at'] = review['created_at'].isoformat()
+            review['created_at'] = review['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
 
         return jsonify(review), 201
     except Exception as e:
@@ -1825,7 +1825,7 @@ def get_comments(post_id):
         by_id = {}
         for c in rows:
             if isinstance(c.get('created_at'), datetime):
-                c['created_at'] = c['created_at'].isoformat()
+                c['created_at'] = c['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
             c['liked_by_me'] = bool(c.get('liked_by_me'))
             c['replies'] = []
             by_id[c['id']] = c
@@ -1888,7 +1888,7 @@ def add_comment(post_id):
         """, (comment_id,))
         comment = cursor.fetchone()
         if comment and isinstance(comment.get('created_at'), datetime):
-            comment['created_at'] = comment['created_at'].isoformat()
+            comment['created_at'] = comment['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
         comment['replies'] = []
         comment['liked_by_me'] = False
 
@@ -1970,7 +1970,7 @@ def get_my_posts():
         posts = cursor.fetchall()
         for p in posts:
             if isinstance(p.get('created_at'), datetime):
-                p['created_at'] = p['created_at'].isoformat()
+                p['created_at'] = p['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
 
         cursor.execute("SELECT COUNT(*) AS total FROM posts WHERE user_id = %s", (g.current_user_id,))
         total = cursor.fetchone()['total']
@@ -2054,7 +2054,7 @@ def get_following_feed():
         posts = cursor.fetchall()
         for p in posts:
             if isinstance(p.get('created_at'), datetime):
-                p['created_at'] = p['created_at'].isoformat()
+                p['created_at'] = p['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
             p['liked_by_me'] = bool(p.get('liked_by_me'))
 
         cursor.execute("""
@@ -2099,7 +2099,7 @@ def get_single_post(post_id):
         if not post:
             return jsonify({"detail": "Post tidak ditemukan"}), 404
         if isinstance(post.get('created_at'), datetime):
-            post['created_at'] = post['created_at'].isoformat()
+            post['created_at'] = post['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
         post['liked_by_me'] = bool(post.get('liked_by_me'))
         return jsonify(post)
     except Exception as e:
@@ -2162,7 +2162,7 @@ def get_public_user_profile(user_id):
         posts = cursor.fetchall()
         for p in posts:
             if isinstance(p.get('created_at'), datetime):
-                p['created_at'] = p['created_at'].isoformat()
+                p['created_at'] = p['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
             p['liked_by_me'] = bool(p.get('liked_by_me'))
             p['user_name'] = user['name']
             p['user_id'] = user_id
