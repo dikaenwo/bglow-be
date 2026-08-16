@@ -1984,6 +1984,48 @@ def get_my_posts():
             conn.close()
 
 
+@app.route("/api/users/me/liked", methods=["GET"])
+@require_auth
+def get_my_liked_posts():
+    """Ambil semua post yang di-like oleh user yang sedang login."""
+    page  = max(1, int(request.args.get('page', 1)))
+    limit = min(30, int(request.args.get('limit', 20)))
+    offset = (page - 1) * limit
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT p.id, p.content, p.image_url, p.created_at,
+                   u.name AS user_name, u.skin_type,
+                   COUNT(DISTINCT pl2.id) AS like_count,
+                   COUNT(DISTINCT pc.id) AS comment_count
+            FROM post_likes pl
+            JOIN posts p ON p.id = pl.post_id
+            JOIN users u ON u.id = p.user_id
+            LEFT JOIN post_likes pl2 ON pl2.post_id = p.id
+            LEFT JOIN post_comments pc ON pc.post_id = p.id
+            WHERE pl.user_id = %s
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.name, u.skin_type
+            ORDER BY pl.created_at DESC
+            LIMIT %s OFFSET %s
+        """, (g.current_user_id, limit, offset))
+        posts = cursor.fetchall()
+        for p in posts:
+            if isinstance(p.get('created_at'), datetime):
+                p['created_at'] = p['created_at'].strftime('%Y-%m-%dT%H:%M:%S+07:00')
+        cursor.execute("""
+            SELECT COUNT(*) AS total FROM post_likes WHERE user_id = %s
+        """, (g.current_user_id,))
+        total = cursor.fetchone()['total']
+        return jsonify({"posts": posts, "total": total, "has_more": offset + limit < total})
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
 # ─── Follow System ─────────────────────────────────────────────────────────────
 
 @app.route("/api/users/<int:user_id>/follow", methods=["POST"])
