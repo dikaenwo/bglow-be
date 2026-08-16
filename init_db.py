@@ -83,6 +83,9 @@ def init_database():
             if 'skin_problems' not in refreshed_cols:
                 cursor.execute("ALTER TABLE users ADD COLUMN skin_problems TEXT")
                 print("Added column 'skin_problems' to 'users' table.")
+            if 'cover_photo' not in refreshed_cols:
+                cursor.execute("ALTER TABLE users ADD COLUMN cover_photo TEXT")
+                print("Added column 'cover_photo' to 'users' table.")
             
             # 2. Buat tabel user_favorites jika belum ada (Pemisahan data produk favorit)
             cursor.execute("""

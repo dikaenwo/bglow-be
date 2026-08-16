@@ -614,7 +614,7 @@ def get_user_profile(user_id):
     try:
         cursor = conn.cursor(dictionary=True)
         cursor.execute("""
-            SELECT id, name, email, profile_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval 
+            SELECT id, name, email, profile_photo, cover_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval 
             FROM users WHERE id = %s
         """, (user_id,))
         user_data = cursor.fetchone()
@@ -684,7 +684,7 @@ def update_user_profile(user_id):
         params = []
 
         allowed_core_fields = [
-            'name', 'email', 'profile_photo', 'skin_type',
+            'name', 'email', 'profile_photo', 'cover_photo', 'skin_type',
             'acne_level', 'oil_level', 'pore_condition', 'skin_score',
             'sunscreen_interval', 'skin_problems'
         ]
@@ -778,7 +778,7 @@ def update_user_profile(user_id):
         conn.commit()
 
         cursor.execute("""
-            SELECT id, name, email, profile_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval 
+            SELECT id, name, email, profile_photo, cover_photo, skin_type, acne_level, oil_level, pore_condition, skin_score, sunscreen_interval 
             FROM users WHERE id = %s
         """, (user_id,))
         updated_user = cursor.fetchone()
