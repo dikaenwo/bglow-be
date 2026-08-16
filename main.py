@@ -2166,7 +2166,8 @@ def get_public_user_profile(user_id):
         cursor = conn.cursor(dictionary=True)
 
         cursor.execute("""
-            SELECT id, name, skin_type, acne_level, oil_level, pore_condition, skin_problems
+            SELECT id, name, skin_type, acne_level, oil_level, pore_condition, skin_problems,
+                   profile_photo, cover_photo
             FROM users WHERE id = %s
         """, (user_id,))
         user = cursor.fetchone()
