@@ -1458,7 +1458,342 @@ def get_transaction_status(order_id):
         return jsonify({"detail": str(e)}), 500
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMUNITY FEED ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'uploads')
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+ALLOWED_IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'webp', 'gif'}
+MAX_IMAGE_SIZE_MB = 5
+
+
+@app.route("/api/upload/image", methods=["POST"])
+@require_auth
+def upload_image():
+    """Upload foto untuk post. Simpan ke /uploads/, return public URL."""
+    if 'image' not in request.files:
+        return jsonify({"detail": "Tidak ada file image yang dikirim"}), 400
+
+    file = request.files['image']
+    if not file.filename:
+        return jsonify({"detail": "Nama file kosong"}), 400
+
+    ext = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else ''
+    if ext not in ALLOWED_IMAGE_EXTS:
+        return jsonify({"detail": f"Format tidak didukung. Gunakan: {', '.join(ALLOWED_IMAGE_EXTS)}"}), 400
+
+    # Baca data & cek ukuran
+    data = file.read()
+    if len(data) > MAX_IMAGE_SIZE_MB * 1024 * 1024:
+        return jsonify({"detail": f"Ukuran file maks {MAX_IMAGE_SIZE_MB}MB"}), 413
+
+    # Resize & compress dengan Pillow
+    try:
+        img = Image.open(io.BytesIO(data))
+        img = img.convert('RGB')
+        max_dim = 1200
+        if img.width > max_dim or img.height > max_dim:
+            img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+
+        filename = f"post_{g.current_user_id}_{secrets.token_hex(8)}.jpg"
+        save_path = os.path.join(UPLOADS_DIR, filename)
+        img.save(save_path, 'JPEG', quality=85, optimize=True)
+    except Exception as e:
+        return jsonify({"detail": f"Gagal memproses gambar: {e}"}), 500
+
+    # Return URL relatif — nginx serve /uploads/
+    image_url = f"/uploads/{filename}"
+    return jsonify({"image_url": image_url}), 201
+
+
+@app.route("/api/feed", methods=["GET"])
+@require_auth
+def get_feed():
+    """Ambil semua post (terbaru duluan), dengan jumlah like & status liked user ini."""
+    page  = max(1, int(request.args.get('page', 1)))
+    limit = min(30, int(request.args.get('limit', 20)))
+    offset = (page - 1) * limit
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT
+                p.id,
+                p.content,
+                p.image_url,
+                p.created_at,
+                u.id AS user_id,
+                u.name AS user_name,
+                u.skin_type,
+                COUNT(DISTINCT pl.id) AS like_count,
+                MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
+            FROM posts p
+            JOIN users u ON u.id = p.user_id
+            LEFT JOIN post_likes pl  ON pl.post_id = p.id
+            LEFT JOIN post_likes pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type
+            ORDER BY p.created_at DESC
+            LIMIT %s OFFSET %s
+        """, (g.current_user_id, g.current_user_id, limit, offset))
+        posts = cursor.fetchall()
+
+        # Serialisasi datetime
+        for post in posts:
+            if isinstance(post.get('created_at'), datetime):
+                post['created_at'] = post['created_at'].isoformat()
+            post['liked_by_me'] = bool(post.get('liked_by_me'))
+
+        # Total count untuk pagination
+        cursor.execute("SELECT COUNT(*) AS total FROM posts")
+        total = cursor.fetchone()['total']
+
+        return jsonify({
+            "posts": posts,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "has_more": offset + limit < total
+        })
+    except Exception as e:
+        print(f"[Feed] Error get_feed: {e}")
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+@app.route("/api/posts", methods=["POST"])
+@require_auth
+def create_post():
+    """Buat post baru. Body: { content, image_url? }"""
+    data = request.get_json(silent=True) or {}
+    content   = (data.get('content') or '').strip()
+    image_url = (data.get('image_url') or '').strip() or None
+
+    if not content and not image_url:
+        return jsonify({"detail": "Konten post tidak boleh kosong"}), 400
+    if len(content) > 1000:
+        return jsonify({"detail": "Konten maksimal 1000 karakter"}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "INSERT INTO posts (user_id, content, image_url) VALUES (%s, %s, %s)",
+            (g.current_user_id, content, image_url)
+        )
+        conn.commit()
+        post_id = cursor.lastrowid
+
+        # Return post yang baru dibuat beserta data user
+        cursor.execute("""
+            SELECT p.id, p.content, p.image_url, p.created_at,
+                   u.id AS user_id, u.name AS user_name, u.skin_type
+            FROM posts p JOIN users u ON u.id = p.user_id
+            WHERE p.id = %s
+        """, (post_id,))
+        post = cursor.fetchone()
+        if post and isinstance(post.get('created_at'), datetime):
+            post['created_at'] = post['created_at'].isoformat()
+        post['like_count']   = 0
+        post['liked_by_me']  = False
+
+        return jsonify(post), 201
+    except Exception as e:
+        print(f"[Feed] Error create_post: {e}")
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+@app.route("/api/posts/<int:post_id>", methods=["DELETE"])
+@require_auth
+def delete_post(post_id):
+    """Hapus post milik user yang sedang login."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT user_id, image_url FROM posts WHERE id = %s", (post_id,))
+        post = cursor.fetchone()
+        if not post:
+            return jsonify({"detail": "Post tidak ditemukan"}), 404
+        if post['user_id'] != g.current_user_id:
+            return jsonify({"detail": "Anda tidak berhak menghapus post ini"}), 403
+
+        # Hapus file gambar jika ada
+        if post.get('image_url'):
+            fname = post['image_url'].lstrip('/uploads/')
+            fpath = os.path.join(UPLOADS_DIR, fname)
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+            except Exception:
+                pass
+
+        cursor.execute("DELETE FROM posts WHERE id = %s", (post_id,))
+        conn.commit()
+        return jsonify({"message": "Post berhasil dihapus"}), 200
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+@app.route("/api/posts/<int:post_id>/like", methods=["POST"])
+@require_auth
+def toggle_like(post_id):
+    """Toggle like/unlike sebuah post."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Cek apakah sudah like
+        cursor.execute(
+            "SELECT id FROM post_likes WHERE post_id = %s AND user_id = %s",
+            (post_id, g.current_user_id)
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            # Unlike
+            cursor.execute(
+                "DELETE FROM post_likes WHERE post_id = %s AND user_id = %s",
+                (post_id, g.current_user_id)
+            )
+            liked = False
+        else:
+            # Like
+            cursor.execute(
+                "INSERT INTO post_likes (post_id, user_id) VALUES (%s, %s)",
+                (post_id, g.current_user_id)
+            )
+            liked = True
+
+        conn.commit()
+
+        # Ambil total like terbaru
+        cursor.execute("SELECT COUNT(*) AS cnt FROM post_likes WHERE post_id = %s", (post_id,))
+        total = cursor.fetchone()['cnt']
+
+        return jsonify({"liked": liked, "like_count": total})
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+# ─── Product Reviews ───────────────────────────────────────────────────────────
+
+@app.route("/api/products/<path:product_name>/reviews", methods=["GET"])
+@require_auth
+def get_product_reviews(product_name):
+    """Ambil semua review untuk produk tertentu (by name)."""
+    product_name = unquote(product_name).strip()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT r.id, r.rating, r.review_text, r.created_at,
+                   u.id AS user_id, u.name AS user_name, u.skin_type
+            FROM product_reviews r
+            JOIN users u ON u.id = r.user_id
+            WHERE r.product_name = %s
+            ORDER BY r.created_at DESC
+            LIMIT 50
+        """, (product_name,))
+        reviews = cursor.fetchall()
+        for r in reviews:
+            if isinstance(r.get('created_at'), datetime):
+                r['created_at'] = r['created_at'].isoformat()
+
+        # Hitung rata-rata rating
+        avg_rating = round(sum(r['rating'] for r in reviews) / len(reviews), 1) if reviews else 0
+
+        # Cek apakah user ini sudah pernah review produk ini
+        cursor.execute(
+            "SELECT id FROM product_reviews WHERE product_name = %s AND user_id = %s",
+            (product_name, g.current_user_id)
+        )
+        already_reviewed = cursor.fetchone() is not None
+
+        return jsonify({
+            "reviews": reviews,
+            "avg_rating": avg_rating,
+            "total": len(reviews),
+            "already_reviewed": already_reviewed
+        })
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+@app.route("/api/products/<path:product_name>/reviews", methods=["POST"])
+@require_auth
+def add_product_review(product_name):
+    """Tambah review produk. Satu user hanya bisa review satu produk sekali."""
+    product_name = unquote(product_name).strip()
+    data = request.get_json(silent=True) or {}
+    rating      = data.get('rating')
+    review_text = (data.get('review_text') or '').strip()
+
+    if not rating or not isinstance(rating, int) or rating < 1 or rating > 5:
+        return jsonify({"detail": "Rating harus antara 1 - 5"}), 400
+    if len(review_text) > 500:
+        return jsonify({"detail": "Review maksimal 500 karakter"}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Cegah double review
+        cursor.execute(
+            "SELECT id FROM product_reviews WHERE product_name = %s AND user_id = %s",
+            (product_name, g.current_user_id)
+        )
+        if cursor.fetchone():
+            return jsonify({"detail": "Anda sudah pernah mereview produk ini"}), 409
+
+        cursor.execute(
+            "INSERT INTO product_reviews (user_id, product_name, rating, review_text) VALUES (%s, %s, %s, %s)",
+            (g.current_user_id, product_name, rating, review_text or None)
+        )
+        conn.commit()
+        review_id = cursor.lastrowid
+
+        cursor.execute("""
+            SELECT r.id, r.rating, r.review_text, r.created_at,
+                   u.id AS user_id, u.name AS user_name, u.skin_type
+            FROM product_reviews r JOIN users u ON u.id = r.user_id
+            WHERE r.id = %s
+        """, (review_id,))
+        review = cursor.fetchone()
+        if review and isinstance(review.get('created_at'), datetime):
+            review['created_at'] = review['created_at'].isoformat()
+
+        return jsonify(review), 201
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
 if __name__ == "__main__":
     # PRODUCTION: debug=False
     # Untuk production, gunakan: gunicorn -w 4 -b 0.0.0.0:5050 main:app
     app.run(host="0.0.0.0", debug=False, port=5050)
+
