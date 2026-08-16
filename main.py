@@ -1806,7 +1806,7 @@ def get_comments(post_id):
 
         cursor.execute("""
             SELECT c.id, c.content, c.created_at, c.parent_id,
-                   u.id AS user_id, u.name AS user_name,
+                   u.id AS user_id, u.name AS user_name, u.profile_photo,
                    COUNT(DISTINCT cl.id) AS like_count,
                    MAX(CASE WHEN cl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
             FROM post_comments c
@@ -1814,7 +1814,7 @@ def get_comments(post_id):
             LEFT JOIN comment_likes cl  ON cl.comment_id  = c.id
             LEFT JOIN comment_likes cl2 ON cl2.comment_id = c.id AND cl2.user_id = %s
             WHERE c.post_id = %s
-            GROUP BY c.id, c.content, c.created_at, c.parent_id, u.id, u.name
+            GROUP BY c.id, c.content, c.created_at, c.parent_id, u.id, u.name, u.profile_photo
             ORDER BY c.created_at ASC
             LIMIT 200
         """, (g.current_user_id, g.current_user_id, post_id))
@@ -2125,7 +2125,7 @@ def get_single_post(post_id):
         cursor.execute("""
             SELECT p.id, p.content, p.image_url, p.created_at,
                    u.id AS user_id, u.name AS user_name,
-                   u.skin_type,
+                   u.skin_type, u.profile_photo,
                    COUNT(DISTINCT pl.id) AS like_count,
                    COUNT(DISTINCT pc.id) AS comment_count,
                    MAX(CASE WHEN pl2.user_id = %s THEN 1 ELSE 0 END) AS liked_by_me
@@ -2135,7 +2135,7 @@ def get_single_post(post_id):
             LEFT JOIN post_comments pc ON pc.post_id = p.id
             LEFT JOIN post_likes pl2 ON pl2.post_id = p.id AND pl2.user_id = %s
             WHERE p.id = %s
-            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type
+            GROUP BY p.id, p.content, p.image_url, p.created_at, u.id, u.name, u.skin_type, u.profile_photo
         """, (g.current_user_id, g.current_user_id, post_id))
         post = cursor.fetchone()
         if not post:
