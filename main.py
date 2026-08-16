@@ -1792,6 +1792,130 @@ def add_product_review(product_name):
             conn.close()
 
 
+# ─── Post Comments ─────────────────────────────────────────────────────────────
+
+@app.route("/api/posts/<int:post_id>/comments", methods=["GET"])
+@require_auth
+def get_comments(post_id):
+    """Ambil semua komentar untuk satu post."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT c.id, c.content, c.created_at,
+                   u.id AS user_id, u.name AS user_name
+            FROM post_comments c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.post_id = %s
+            ORDER BY c.created_at ASC
+            LIMIT 100
+        """, (post_id,))
+        comments = cursor.fetchall()
+        for c in comments:
+            if isinstance(c.get('created_at'), datetime):
+                c['created_at'] = c['created_at'].isoformat()
+        # Ambil total count
+        cursor.execute("SELECT COUNT(*) AS cnt FROM post_comments WHERE post_id = %s", (post_id,))
+        total = cursor.fetchone()['cnt']
+        return jsonify({"comments": comments, "total": total})
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+@app.route("/api/posts/<int:post_id>/comments", methods=["POST"])
+@require_auth
+def add_comment(post_id):
+    """Tambah komentar ke sebuah post."""
+    data = request.get_json(silent=True) or {}
+    content = (data.get('content') or '').strip()
+    if not content:
+        return jsonify({"detail": "Komentar tidak boleh kosong"}), 400
+    if len(content) > 500:
+        return jsonify({"detail": "Komentar maksimal 500 karakter"}), 400
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        # Pastikan post ada
+        cursor.execute("SELECT id FROM posts WHERE id = %s", (post_id,))
+        if not cursor.fetchone():
+            return jsonify({"detail": "Post tidak ditemukan"}), 404
+
+        cursor.execute(
+            "INSERT INTO post_comments (post_id, user_id, content) VALUES (%s, %s, %s)",
+            (post_id, g.current_user_id, content)
+        )
+        conn.commit()
+        comment_id = cursor.lastrowid
+
+        cursor.execute("""
+            SELECT c.id, c.content, c.created_at,
+                   u.id AS user_id, u.name AS user_name
+            FROM post_comments c JOIN users u ON u.id = c.user_id
+            WHERE c.id = %s
+        """, (comment_id,))
+        comment = cursor.fetchone()
+        if comment and isinstance(comment.get('created_at'), datetime):
+            comment['created_at'] = comment['created_at'].isoformat()
+
+        # Update comment count di response
+        cursor.execute("SELECT COUNT(*) AS cnt FROM post_comments WHERE post_id = %s", (post_id,))
+        comment['post_comment_count'] = cursor.fetchone()['cnt']
+
+        return jsonify(comment), 201
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
+# ─── User's Own Posts (for Profile page) ─────────────────────────────────────
+
+@app.route("/api/users/me/posts", methods=["GET"])
+@require_auth
+def get_my_posts():
+    """Ambil semua post milik user yang sedang login."""
+    page  = max(1, int(request.args.get('page', 1)))
+    limit = min(30, int(request.args.get('limit', 20)))
+    offset = (page - 1) * limit
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""
+            SELECT p.id, p.content, p.image_url, p.created_at,
+                   COUNT(DISTINCT pl.id) AS like_count,
+                   COUNT(DISTINCT pc.id) AS comment_count
+            FROM posts p
+            LEFT JOIN post_likes pl ON pl.post_id = p.id
+            LEFT JOIN post_comments pc ON pc.post_id = p.id
+            WHERE p.user_id = %s
+            GROUP BY p.id, p.content, p.image_url, p.created_at
+            ORDER BY p.created_at DESC
+            LIMIT %s OFFSET %s
+        """, (g.current_user_id, limit, offset))
+        posts = cursor.fetchall()
+        for p in posts:
+            if isinstance(p.get('created_at'), datetime):
+                p['created_at'] = p['created_at'].isoformat()
+
+        cursor.execute("SELECT COUNT(*) AS total FROM posts WHERE user_id = %s", (g.current_user_id,))
+        total = cursor.fetchone()['total']
+
+        return jsonify({"posts": posts, "total": total, "has_more": offset + limit < total})
+    except Exception as e:
+        return jsonify({"detail": str(e)}), 500
+    finally:
+        if conn.is_connected():
+            cursor.close()
+            conn.close()
+
+
 if __name__ == "__main__":
     # PRODUCTION: debug=False
     # Untuk production, gunakan: gunicorn -w 4 -b 0.0.0.0:5050 main:app
